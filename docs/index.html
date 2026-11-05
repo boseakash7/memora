@@ -5,75 +5,277 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Memora: private, offline photo library for Windows</title>
 <meta name="description" content="Memora is a free, offline photo and video library for Windows with TV streaming. Your photos never leave your PC.">
+<meta property="og:title" content="Memora: private, offline photo library for Windows">
+<meta property="og:description" content="Your memories. Private. Offline. On your TV.">
+<meta property="og:image" content="https://boseakash7.github.io/memora/img/p03.jpg">
 <link rel="icon" href="favicon.svg">
 <style>
-  :root { --bg:#fff; --fg:#0f172a; --muted:#475569; --card:#f1f5f9; --accent:#4f46e5; }
-  @media (prefers-color-scheme: dark) { :root { --bg:#0b1020; --fg:#e2e8f0; --muted:#94a3b8; --card:#151c33; --accent:#818cf8; } }
-  * { box-sizing:border-box }
-  body { margin:0; font:16px/1.6 system-ui,"Segoe UI",sans-serif; background:var(--bg); color:var(--fg) }
-  .wrap { max-width:960px; margin:0 auto; padding:0 24px }
-  header.hero { text-align:center; padding:72px 0 48px }
-  header.hero img { width:96px; height:96px }
-  h1 { font-size:clamp(2.2rem,6vw,3.6rem); margin:16px 0 8px; letter-spacing:-.02em }
-  .tag { font-size:1.25rem; color:var(--muted); max-width:620px; margin:0 auto 28px }
-  .btn { display:inline-block; background:var(--accent); color:#fff; padding:14px 28px; border-radius:999px; font-weight:600; text-decoration:none; margin:4px; border:2px solid var(--accent) }
-  .btn.alt { background:transparent; color:var(--accent) }
-  .note { font-size:.9rem; color:var(--muted); margin-top:12px }
-  .vibe { background:var(--card); border-left:4px solid var(--accent); padding:16px 20px; border-radius:8px; margin:0 0 48px }
-  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:16px; margin-bottom:48px }
-  .card { background:var(--card); border-radius:14px; padding:20px }
-  .card h3 { margin:0 0 6px }
-  .card p { margin:0; color:var(--muted) }
-  h2 { margin:48px 0 16px }
-  li { margin:6px 0 }
-  footer { text-align:center; color:var(--muted); padding:40px 0; font-size:.9rem }
-  a { color:var(--accent) }
-  code { background:var(--card); padding:2px 6px; border-radius:6px }
+:root{--bg:#0b1020;--bg2:#0f172a;--fg:#e5e9f5;--muted:#93a0bd;--card:#141c34;--line:#222c4a;--a:#818cf8;--b:#f472b6;--c:#38bdf8}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,"Segoe UI",sans-serif;overflow-x:hidden}
+a{color:var(--a)}
+.wrap{max-width:1100px;margin:0 auto;padding:0 24px}
+img{display:block}
+
+/* nav */
+nav{position:fixed;inset:0 0 auto 0;z-index:50;transition:.3s}
+nav.stuck{background:rgba(11,16,32,.75);backdrop-filter:blur(14px);border-bottom:1px solid var(--line)}
+nav .wrap{display:flex;align-items:center;gap:28px;height:64px}
+.logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:1.15rem;color:var(--fg);text-decoration:none}
+.logo img{width:30px;height:30px}
+nav .links{margin-left:auto;display:flex;gap:24px;align-items:center}
+nav .links a{color:var(--muted);text-decoration:none;font-size:.95rem}
+nav .links a:hover{color:var(--fg)}
+.btn{display:inline-block;padding:13px 26px;border-radius:999px;font-weight:600;text-decoration:none;color:#fff;background:linear-gradient(135deg,#6366f1,#ec4899);box-shadow:0 8px 30px -8px rgba(236,72,153,.6);transition:transform .2s,box-shadow .2s}
+.btn:hover{transform:translateY(-2px);box-shadow:0 14px 36px -8px rgba(236,72,153,.8)}
+.btn.ghost{background:transparent;border:1.5px solid var(--line);box-shadow:none;color:var(--fg)}
+.btn.ghost:hover{border-color:var(--a)}
+nav .btn{padding:8px 18px;font-size:.9rem;color:#fff!important}
+
+/* hero */
+.hero{position:relative;padding:150px 0 90px;text-align:center;overflow:hidden}
+.wall{position:absolute;inset:0;display:flex;gap:14px;opacity:.22;transform:rotate(-8deg) scale(1.3);filter:saturate(1.2)}
+.wall .col{display:flex;flex-direction:column;gap:14px;animation:drift 60s linear infinite;flex:1}
+.wall .col:nth-child(even){animation-direction:reverse;animation-duration:75s}
+.wall img{width:100%;height:230px;object-fit:cover;border-radius:14px}
+@keyframes drift{from{transform:translateY(0)}to{transform:translateY(-50%)}}
+.hero::after{content:"";position:absolute;inset:0;background:radial-gradient(ellipse at 50% 30%,rgba(11,16,32,.35),var(--bg) 78%)}
+.hero .wrap{position:relative;z-index:2}
+.badge{display:inline-flex;align-items:center;gap:8px;padding:6px 14px;border:1px solid var(--line);background:rgba(20,28,52,.7);border-radius:999px;font-size:.85rem;color:var(--muted);margin-bottom:22px}
+.dot{width:8px;height:8px;border-radius:50%;background:#22c55e;box-shadow:0 0 0 0 rgba(34,197,94,.7);animation:pulse 2s infinite}
+@keyframes pulse{70%{box-shadow:0 0 0 10px rgba(34,197,94,0)}100%{box-shadow:0 0 0 0 rgba(34,197,94,0)}}
+h1{font-size:clamp(2.4rem,7vw,4.8rem);line-height:1.05;margin:0 0 18px;letter-spacing:-.03em}
+.grad{background:linear-gradient(90deg,#818cf8,#f472b6,#38bdf8,#818cf8);background-size:300% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:shimmer 8s linear infinite}
+@keyframes shimmer{to{background-position:300% 0}}
+.sub{font-size:1.2rem;color:var(--muted);max-width:620px;margin:0 auto 30px}
+.cta{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+.small{font-size:.85rem;color:var(--muted);margin-top:14px}
+
+/* app mockup */
+.stage{perspective:1400px;margin-top:64px}
+.app{max-width:960px;margin:0 auto;border-radius:16px;background:#fff;color:#202124;overflow:hidden;box-shadow:0 40px 120px -20px rgba(99,102,241,.55),0 0 0 1px rgba(255,255,255,.08);transform:rotateX(8deg) rotateY(var(--ry,0deg)) translateY(var(--ty,0px));transition:transform .15s ease-out;text-align:left;animation:float 7s ease-in-out infinite}
+@keyframes float{50%{margin-top:-10px}}
+.bar{display:flex;align-items:center;gap:8px;padding:10px 14px;background:#f1f3f4;border-bottom:1px solid #e0e0e0}
+.bar i{width:11px;height:11px;border-radius:50%;background:#ff5f57}.bar i:nth-child(2){background:#febc2e}.bar i:nth-child(3){background:#28c840}
+.bar span{margin-left:10px;font-size:.8rem;color:#5f6368;display:flex;align-items:center;gap:6px}.bar span img{width:16px}
+.search{margin:0 auto;background:#e8eaed;border-radius:999px;padding:4px 16px;font-size:.78rem;color:#5f6368;width:42%}
+.body{display:grid;grid-template-columns:150px 1fr;height:440px}
+.side{padding:12px 8px;font-size:.82rem;border-right:1px solid #eee;background:#fafafa}
+.side div{padding:8px 12px;border-radius:0 999px 999px 0;color:#3c4043}
+.side .on{background:#e8f0fe;color:#1967d2;font-weight:600}
+.main{padding:14px 16px;overflow:hidden}
+.main h4{margin:0 0 8px;font-size:.78rem;color:#5f6368;font-weight:600}
+.g{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;margin-bottom:14px}
+.g{grid-auto-flow:dense}
+.g img{width:100%;height:120px;object-fit:cover;border-radius:3px}
+.g img:nth-child(3n){grid-column:span 2}
+.sel{position:relative}
+.sel::after{content:"✓";position:absolute;top:6px;left:6px;width:18px;height:18px;border-radius:50%;background:#1a73e8;color:#fff;font-size:11px;text-align:center;line-height:18px}
+
+/* sections */
+section{padding:90px 0}
+.eyebrow{color:var(--b);font-weight:600;font-size:.85rem;letter-spacing:.12em;text-transform:uppercase;margin-bottom:8px}
+h2{font-size:clamp(1.8rem,4vw,2.8rem);line-height:1.15;margin:0 0 14px;letter-spacing:-.02em}
+.lead{color:var(--muted);max-width:620px;margin:0 0 40px}
+.center{text-align:center}.center .lead{margin-inline:auto}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:18px}
+.card{position:relative;background:var(--card);border:1px solid var(--line);border-radius:18px;padding:26px;transition:transform .25s,border-color .25s,box-shadow .25s;overflow:hidden}
+.card:hover{transform:translateY(-6px);border-color:var(--a);box-shadow:0 20px 50px -20px rgba(129,140,248,.5)}
+.card .ic{width:44px;height:44px;border-radius:12px;display:grid;place-items:center;font-size:1.4rem;background:linear-gradient(135deg,rgba(99,102,241,.25),rgba(236,72,153,.25));margin-bottom:14px}
+.card h3{margin:0 0 6px}.card p{margin:0;color:var(--muted)}
+
+/* TV */
+.tvsec{background:linear-gradient(180deg,var(--bg),var(--bg2) 50%,var(--bg))}
+.tvgrid{display:grid;grid-template-columns:1fr 1.2fr;gap:50px;align-items:center}
+.cast{position:relative;display:flex;align-items:center;gap:0;margin-top:20px}
+.pc{width:120px;height:78px;border-radius:8px;background:#1e293b;border:3px solid #334155;display:grid;place-items:center;font-size:.75rem;color:var(--muted)}
+.line{flex:1;height:3px;position:relative;background:repeating-linear-gradient(90deg,var(--a) 0 8px,transparent 8px 16px);background-size:16px 3px;animation:flow 1s linear infinite;min-width:60px}
+@keyframes flow{to{background-position:16px 0}}
+.tv{position:relative;border-radius:14px;border:8px solid #1e293b;background:#000;box-shadow:0 30px 80px -20px rgba(56,189,248,.4);aspect-ratio:16/9;overflow:hidden}
+.tv::after{content:"";position:absolute;left:50%;bottom:-24px;width:40%;height:8px;background:#1e293b;border-radius:0 0 8px 8px;transform:translateX(-50%)}
+.tv img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;animation:slide 12s infinite}
+.tv img:nth-child(2){animation-delay:4s}.tv img:nth-child(3){animation-delay:8s}
+@keyframes slide{0%{opacity:0;transform:scale(1)}8%,30%{opacity:1}38%{opacity:0;transform:scale(1.08)}100%{opacity:0}}
+.tvlabel{position:absolute;left:14px;bottom:12px;z-index:3;background:rgba(0,0,0,.6);padding:4px 10px;border-radius:6px;font-size:.75rem}
+
+/* gallery */
+.masonry{columns:4 200px;column-gap:14px}
+.masonry div{break-inside:avoid;margin-bottom:14px;border-radius:14px;overflow:hidden}
+.masonry img{width:100%;transition:transform .6s}
+.masonry div:hover img{transform:scale(1.08)}
+.credit{font-size:.8rem;color:var(--muted);margin-top:10px}
+
+/* steps */
+.steps{position:relative;display:grid;gap:22px;max-width:700px;margin:0 auto}
+.steps::before{content:"";position:absolute;left:21px;top:10px;bottom:10px;width:2px;background:var(--line)}
+.steps .fill{position:absolute;left:21px;top:10px;width:2px;background:linear-gradient(var(--a),var(--b));height:var(--p,0%);max-height:calc(100% - 20px)}
+.step{position:relative;display:flex;gap:20px;align-items:flex-start}
+.num{flex:none;width:44px;height:44px;border-radius:50%;background:var(--card);border:2px solid var(--line);display:grid;place-items:center;font-weight:700;z-index:1}
+.step.in .num{border-color:var(--b);background:linear-gradient(135deg,#6366f1,#ec4899)}
+.step p{margin:2px 0 0;color:var(--muted)}
+code{background:var(--card);border:1px solid var(--line);padding:2px 8px;border-radius:6px;font-size:.9em}
+
+/* roadmap */
+.road{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px}
+.rc{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:22px;border-top:4px solid var(--c)}
+.rc:nth-child(2){border-top-color:var(--a)}.rc:nth-child(3){border-top-color:var(--b)}.rc:nth-child(4){border-top-color:#fb923c}
+.rc h3{margin:0 0 2px}.rc .t{font-size:.8rem;color:var(--muted);margin-bottom:10px}
+.rc ul{margin:0;padding-left:18px;color:var(--muted)}
+
+/* final cta */
+.final{text-align:center;position:relative;overflow:hidden}
+.final::before{content:"";position:absolute;left:50%;top:50%;width:700px;height:700px;transform:translate(-50%,-50%);background:radial-gradient(circle,rgba(99,102,241,.3),transparent 65%);animation:breathe 6s ease-in-out infinite}
+@keyframes breathe{50%{transform:translate(-50%,-50%) scale(1.2)}}
+.final .wrap{position:relative}
+.final .iconbig{width:96px;margin:0 auto 20px;animation:spin 30s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+footer{text-align:center;color:var(--muted);padding:36px 0;border-top:1px solid var(--line);font-size:.9rem}
+
+/* reveal */
+.rv{opacity:0;transform:translateY(30px);transition:opacity .8s,transform .8s}
+.rv.in{opacity:1;transform:none}
+.cards .rv:nth-child(2),.road .rv:nth-child(2){transition-delay:.1s}
+.cards .rv:nth-child(3),.road .rv:nth-child(3){transition-delay:.2s}
+.cards .rv:nth-child(4),.road .rv:nth-child(4){transition-delay:.3s}
+.cards .rv:nth-child(5){transition-delay:.4s}.cards .rv:nth-child(6){transition-delay:.5s}
+
+@media(max-width:820px){.tvgrid{grid-template-columns:1fr}.body{grid-template-columns:1fr}.side{display:none}nav .links a:not(.btn){display:none}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}.rv{opacity:1;transform:none}.tv img:first-child{opacity:1}}
 </style>
 </head>
 <body>
-<div class="wrap">
-  <header class="hero">
-    <img src="favicon.svg" alt="Memora logo">
-    <h1>Memora</h1>
-    <p class="tag">Your photos and videos, beautifully organized, 100% offline. Stream them to your TV without any cloud.</p>
-    <a class="btn" href="https://github.com/boseakash7/memora/releases/latest">Download for Windows</a>
-    <a class="btn alt" href="https://github.com/boseakash7/memora">View on GitHub</a>
-    <p class="note">Free and open source (MIT). Windows 10/11, 64-bit.</p>
-  </header>
 
-  <div class="vibe">
-    <strong>Full disclosure: this app is 100% vibe coded.</strong>
-    I built Memora entirely by prompting an AI coding assistant (Claude Code) and reviewing the results, without writing the code by hand.
-    It works well for me, but it is young. Keep backups (Memora never modifies your originals), and please report bugs on GitHub.
+<nav id="nav"><div class="wrap">
+  <a class="logo" href="#top"><img src="favicon.svg" alt="">Memora</a>
+  <div class="links">
+    <a href="#features">Features</a><a href="#tv">TV</a><a href="#start">Get started</a><a href="#roadmap">Roadmap</a>
+    <a class="btn" href="https://github.com/boseakash7/memora/releases/latest">Download</a>
   </div>
+</div></nav>
 
-  <section class="grid">
-    <div class="card"><h3>Private by design</h3><p>No accounts, no cloud, no telemetry. Memora indexes your folders in place and never moves or edits your files.</p></div>
-    <div class="card"><h3>Google Photos feel</h3><p>Timeline with date scrubber, albums, favorites, search, trash, and a full-screen viewer for photos and videos.</p></div>
-    <div class="card"><h3>Stream to your TV</h3><p>Appears as a media server on your smart TV (DLNA/UPnP), plus a remote-friendly web page at <code>/tv</code>.</p></div>
-    <div class="card"><h3>Places and map</h3><p>See where photos were taken from GPS data, using an offline map. Nothing is looked up online.</p></div>
-    <div class="card"><h3>Duplicate finder</h3><p>Finds exact and near-duplicate photos and lets you clean up in one click (to the Recycle Bin).</p></div>
-    <div class="card"><h3>HEIC and video</h3><p>iPhone HEIC photos and common video formats, with automatic conversion when a codec isn't supported.</p></div>
-  </section>
+<header class="hero" id="top">
+  <div class="wall" aria-hidden="true">
+    <div class="col"><img src="img/p01.jpg" alt=""><img src="img/p05.jpg" alt=""><img src="img/p09.jpg" alt=""><img src="img/p01.jpg" alt=""><img src="img/p05.jpg" alt=""><img src="img/p09.jpg" alt=""></div>
+    <div class="col"><img src="img/p02.jpg" alt=""><img src="img/p06.jpg" alt=""><img src="img/p10.jpg" alt=""><img src="img/p02.jpg" alt=""><img src="img/p06.jpg" alt=""><img src="img/p10.jpg" alt=""></div>
+    <div class="col"><img src="img/p03.jpg" alt=""><img src="img/p07.jpg" alt=""><img src="img/p11.jpg" alt=""><img src="img/p03.jpg" alt=""><img src="img/p07.jpg" alt=""><img src="img/p11.jpg" alt=""></div>
+    <div class="col"><img src="img/p04.jpg" alt=""><img src="img/p08.jpg" alt=""><img src="img/p12.jpg" alt=""><img src="img/p04.jpg" alt=""><img src="img/p08.jpg" alt=""><img src="img/p12.jpg" alt=""></div>
+  </div>
+  <div class="wrap">
+    <div class="badge rv"><span class="dot"></span>100% vibe coded &middot; free &amp; open source</div>
+    <h1 class="rv">Your memories.<br><span class="grad">Private. Offline. On your TV.</span></h1>
+    <p class="sub rv">Memora is a fast photo and video library for Windows. No cloud, no accounts, no uploads. Just your photos, beautifully organized.</p>
+    <div class="cta rv">
+      <a class="btn" href="https://github.com/boseakash7/memora/releases/latest">Download for Windows</a>
+      <a class="btn ghost" href="https://github.com/boseakash7/memora">View on GitHub</a>
+    </div>
+    <p class="small rv">Windows 10/11, 64-bit &middot; MIT licensed</p>
 
-  <h2>Try it in 3 minutes</h2>
-  <ol>
-    <li>Install FFmpeg: <code>winget install Gyan.FFmpeg</code></li>
-    <li><a href="https://github.com/boseakash7/memora/releases/latest">Download the installer</a> and run it. If SmartScreen warns (the app isn't code-signed yet), choose <em>More info, then Run anyway</em>.</li>
-    <li>Open Memora, go to <strong>Settings</strong>, add a photo folder, and watch your library fill in.</li>
-    <li>Optional: turn on <strong>TV sharing</strong> in Settings, then pick Memora from your TV's media sources.</li>
-  </ol>
+    <div class="stage rv">
+      <div class="app" id="app">
+        <div class="bar"><i></i><i></i><i></i><span><img src="favicon.svg" alt="">Memora</span><div class="search">Search your photos</div></div>
+        <div class="body">
+          <div class="side"><div class="on">Photos</div><div>Explore</div><div>Albums</div><div>Favorites</div><div>Places</div><div>Utilities</div><div>Trash</div><div>Settings</div></div>
+          <div class="main">
+            <h4>Today</h4>
+            <div class="g"><img src="img/p03.jpg" alt=""><img class="sel" src="img/p01.jpg" alt=""><img src="img/p05.jpg" alt=""><img src="img/p02.jpg" alt=""><img src="img/p07.jpg" alt=""><img src="img/p12.jpg" alt=""></div>
+            <h4>Last weekend</h4>
+            <div class="g"><img src="img/p06.jpg" alt=""><img src="img/p10.jpg" alt=""><img src="img/p08.jpg" alt=""><img src="img/p04.jpg" alt=""><img src="img/p09.jpg" alt=""><img src="img/p11.jpg" alt=""></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</header>
 
-  <h2>Roadmap</h2>
-  <ul>
-    <li><strong>Now (v0.1):</strong> timeline, albums, search, map, duplicates, TV streaming</li>
-    <li><strong>Next:</strong> bundled FFmpeg, RAW support, signed installer</li>
-    <li><strong>Soon:</strong> offline face grouping, natural-language search ("dog on a beach"), memories</li>
-    <li><strong>Later:</strong> encrypted private vault, basic editing, backup to NAS</li>
-  </ul>
-  <p><a href="https://github.com/boseakash7/memora/blob/main/ROADMAP.md">Read the full roadmap</a></p>
-</div>
-<footer>Memora is MIT licensed. <a href="https://github.com/boseakash7/memora/issues">Report an issue</a></footer>
+<section id="features"><div class="wrap">
+  <div class="center"><div class="eyebrow rv">Features</div><h2 class="rv">Everything you like about cloud photos.<br>Nothing you don't.</h2><p class="lead rv">Memora indexes your existing folders in place. It never moves, edits or uploads a single file.</p></div>
+  <div class="cards">
+    <div class="card rv"><div class="ic">🔒</div><h3>Private by design</h3><p>No accounts, no cloud, no telemetry. Your library lives on your PC.</p></div>
+    <div class="card rv"><div class="ic">🖼️</div><h3>Google Photos feel</h3><p>Timeline with a date scrubber, albums, favorites, trash and a full-screen viewer.</p></div>
+    <div class="card rv"><div class="ic">📺</div><h3>Stream to your TV</h3><p>Shows up as a media server on smart TVs, plus a remote-friendly web page.</p></div>
+    <div class="card rv"><div class="ic">🗺️</div><h3>Places &amp; map</h3><p>See where photos were taken from GPS data, on an offline map.</p></div>
+    <div class="card rv"><div class="ic">🧹</div><h3>Duplicate finder</h3><p>Finds exact and near-duplicates and cleans up in one click, to the Recycle Bin.</p></div>
+    <div class="card rv"><div class="ic">🎞️</div><h3>HEIC &amp; video</h3><p>iPhone HEIC and common video formats, converted on the fly when needed.</p></div>
+  </div>
+</div></section>
+
+<section class="tvsec" id="tv"><div class="wrap tvgrid">
+  <div>
+    <div class="eyebrow rv">TV streaming</div>
+    <h2 class="rv">Your library on the big screen.</h2>
+    <p class="lead rv" style="margin-bottom:0">Turn on TV sharing and pick Memora from your TV's media sources (DLNA/UPnP), or open the <code>/tv</code> page in the TV browser. Everything stays on your home network.</p>
+    <div class="cast rv"><div class="pc">Your PC</div><div class="line"></div><div class="pc" style="border-color:#38bdf8">Your TV</div></div>
+  </div>
+  <div class="rv"><div class="tv"><img src="img/p03.jpg" alt=""><img src="img/p06.jpg" alt=""><img src="img/p05.jpg" alt=""><div class="tvlabel">Memora &middot; Slideshow</div></div></div>
+</div></section>
+
+<section><div class="wrap">
+  <div class="center"><div class="eyebrow rv">Your moments</div><h2 class="rv">Made for the photos you love.</h2></div>
+  <div class="masonry rv" style="margin-top:34px">
+    <div><img loading="lazy" src="img/p01.jpg" alt="Mountain sunrise above clouds"></div>
+    <div><img loading="lazy" src="img/p09.jpg" alt="Road through red rocks"></div>
+    <div><img loading="lazy" src="img/p05.jpg" alt="Beach at sunrise"></div>
+    <div><img loading="lazy" src="img/p10.jpg" alt="Sunlit forest"></div>
+    <div><img loading="lazy" src="img/p03.jpg" alt="Boat on a turquoise lake"></div>
+    <div><img loading="lazy" src="img/p07.jpg" alt="Road in desert canyon"></div>
+    <div><img loading="lazy" src="img/p06.jpg" alt="Milky way over mountains"></div>
+    <div><img loading="lazy" src="img/p11.jpg" alt="Forest bridge"></div>
+  </div>
+  <p class="credit">Sample photos from <a href="https://unsplash.com">Unsplash</a>. They are placeholders for illustration and are not included in the app.</p>
+</div></section>
+
+<section id="start"><div class="wrap">
+  <div class="center"><div class="eyebrow rv">Get started</div><h2 class="rv">Try it in 3 minutes</h2></div>
+  <div class="steps" id="steps" style="margin-top:34px"><div class="fill"></div>
+    <div class="step rv"><div class="num">1</div><div><strong>Install FFmpeg</strong><p>Needed for video and HEIC. Run <code>winget install Gyan.FFmpeg</code></p></div></div>
+    <div class="step rv"><div class="num">2</div><div><strong>Download and install Memora</strong><p>Get the installer from <a href="https://github.com/boseakash7/memora/releases/latest">Releases</a>. If SmartScreen warns (not code-signed yet), choose <em>More info, then Run anyway</em>.</p></div></div>
+    <div class="step rv"><div class="num">3</div><div><strong>Add a folder</strong><p>Open Settings, add a photo folder and watch your library fill in.</p></div></div>
+    <div class="step rv"><div class="num">4</div><div><strong>Optional: cast to your TV</strong><p>Turn on TV sharing in Settings, then choose Memora in your TV's media sources.</p></div></div>
+  </div>
+</div></section>
+
+<section id="roadmap"><div class="wrap">
+  <div class="center"><div class="eyebrow rv">Roadmap</div><h2 class="rv">Where Memora is going</h2><p class="lead rv">Always offline, always yours.</p></div>
+  <div class="road">
+    <div class="rc rv"><h3>Now</h3><div class="t">v0.1 &middot; shipped</div><ul><li>Timeline &amp; viewer</li><li>Albums, search, trash</li><li>Map &amp; duplicates</li><li>TV streaming</li></ul></div>
+    <div class="rc rv"><h3>Next</h3><div class="t">v0.2</div><ul><li>Bundled FFmpeg</li><li>RAW photo support</li><li>Signed installer</li></ul></div>
+    <div class="rc rv"><h3>Soon</h3><div class="t">v0.3</div><ul><li>Offline face grouping</li><li>Search "dog on a beach"</li><li>Memories</li></ul></div>
+    <div class="rc rv"><h3>Later</h3><div class="t">v0.4+</div><ul><li>Encrypted private vault</li><li>Basic editing</li><li>Backup to NAS</li></ul></div>
+  </div>
+  <p class="center rv" style="margin-top:24px"><a href="https://github.com/boseakash7/memora/blob/main/ROADMAP.md">Read the full roadmap</a></p>
+</div></section>
+
+<section class="final"><div class="wrap">
+  <img class="iconbig" src="favicon.svg" alt="">
+  <h2 class="rv">Bring your photos home.</h2>
+  <p class="lead rv">Free, open source, and honest about how it was made: <strong>this whole app was vibe coded</strong> with an AI assistant. It works great for me, but keep backups and report bugs.</p>
+  <div class="cta rv"><a class="btn" href="https://github.com/boseakash7/memora/releases/latest">Download for Windows</a><a class="btn ghost" href="https://github.com/boseakash7/memora/issues">Report an issue</a></div>
+</div></section>
+
+<footer>Memora &middot; MIT licensed &middot; <a href="https://github.com/boseakash7/memora">GitHub</a></footer>
+
+<script>
+const nav=document.getElementById('nav');
+addEventListener('scroll',()=>{nav.classList.toggle('stuck',scrollY>20);updateSteps()},{passive:true});
+const io=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}}),{threshold:.15});
+document.querySelectorAll('.rv').forEach(el=>io.observe(el));
+document.querySelectorAll('.step').forEach(el=>io.observe(el));
+// app mockup tilts with the mouse
+const app=document.getElementById('app');
+document.querySelector('.stage').addEventListener('mousemove',e=>{
+  const r=e.currentTarget.getBoundingClientRect();
+  app.style.setProperty('--ry',((e.clientX-r.left)/r.width-.5)*10+'deg');
+});
+document.querySelector('.stage').addEventListener('mouseleave',()=>app.style.setProperty('--ry','0deg'));
+// steps progress line
+const steps=document.getElementById('steps');
+function updateSteps(){
+  const r=steps.getBoundingClientRect();
+  const p=Math.min(1,Math.max(0,(innerHeight*.7-r.top)/r.height));
+  steps.style.setProperty('--p',p*100+'%');
+}
+updateSteps();
+</script>
 </body>
 </html>
