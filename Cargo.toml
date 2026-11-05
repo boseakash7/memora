@@ -1,0 +1,18 @@
+[workspace]
+resolver = "3"
+members = ["crates/core", "crates/server", "src-tauri"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.93"
+
+[profile.dev.package."*"]
+# Dependencies (image decoding, sqlite) are much faster with optimizations, even in dev builds.
+opt-level = 2
+
+[profile.dev.package.photos-core]
+# Generic image code (resizing, JPEG encoding) is compiled into this crate, so without this
+# thumbnails are several times slower in `cargo tauri dev`.
+opt-level = 2

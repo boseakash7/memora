@@ -1,0 +1,10 @@
+/target
+**/node_modules
+ui/dist
+ui/dist-tv
+src-tauri/gen/schemas
+# machine-specific build output location
+/.cargo
+*.log
+branding/preview.html
+branding/preview.png

@@ -1,0 +1,417 @@
+/* TV page. Sized in rem, with 1rem = 1/96 of the screen width (20px on a 1080p TV), so it
+   looks the same at any TV resolution. Phones get a larger base size (see the media query).
+   Plain CSS for old TV browsers: no flex `gap`, `inset` or `aspect-ratio`. */
+
+html {
+  font-size: 1.0417vw;
+  background: #0f0f10;
+  color: #eee;
+  scrollbar-width: none;
+}
+
+html::-webkit-scrollbar {
+  display: none;
+}
+
+body {
+  margin: 0;
+  font-family: 'Segoe UI', Roboto, 'Samsung One', Arial, sans-serif;
+  overflow-x: hidden;
+  -webkit-tap-highlight-color: transparent;
+}
+
+@media (max-width: 900px) {
+  html {
+    font-size: 11px;
+  }
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  border: 0;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.loading,
+.message {
+  margin: 20vh auto 0;
+  text-align: center;
+  font-size: 1.6rem;
+  color: #aaa;
+}
+
+.message .btn {
+  margin-top: 2rem;
+}
+
+/* ---------- focus ---------- */
+
+.focusable {
+  outline: none;
+  transition: transform 0.12s ease-out, box-shadow 0.12s ease-out;
+}
+
+.focusable:focus {
+  transform: scale(1.06);
+  box-shadow: 0 0 0 0.25rem #fff, 0 0.5rem 1.5rem rgba(0, 0, 0, 0.6);
+  z-index: 2;
+}
+
+/* ---------- home ---------- */
+
+.home {
+  padding: 2rem 0 4rem;
+}
+
+.header {
+  display: flex;
+  align-items: baseline;
+  padding: 0 3rem 1rem;
+}
+
+.header h1 {
+  margin: 0;
+  font-size: 2.2rem;
+  font-weight: 600;
+}
+
+.header .count {
+  margin-left: 1.5rem;
+  font-size: 1.2rem;
+  color: #999;
+}
+
+.row {
+  margin-top: 1.6rem;
+}
+
+.row h2 {
+  margin: 0 3rem 0.6rem;
+  font-size: 1.5rem;
+  font-weight: 500;
+  color: #ddd;
+}
+
+.row-items {
+  display: flex;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.8rem 3rem 1.2rem;
+  scrollbar-width: none;
+}
+
+.row-items::-webkit-scrollbar {
+  display: none;
+}
+
+.tile {
+  position: relative;
+  flex: 0 0 auto;
+  width: 15rem;
+  height: 10rem;
+  margin-right: 1rem;
+  border-radius: 0.5rem;
+  overflow: hidden;
+  background: #222;
+}
+
+.tile img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.tile .label {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 1.6rem 0.8rem 0.6rem;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.85));
+  font-size: 1.05rem;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tile .label small {
+  display: block;
+  color: #bbb;
+  font-size: 0.85rem;
+}
+
+.tile .badge {
+  position: absolute;
+  right: 0.5rem;
+  bottom: 0.5rem;
+  padding: 0.15rem 0.45rem;
+  border-radius: 0.3rem;
+  background: rgba(0, 0, 0, 0.7);
+  font-size: 0.9rem;
+}
+
+.tile.more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #2a2a2e;
+  font-size: 1.3rem;
+  text-align: center;
+}
+
+/* ---------- grid ---------- */
+
+.grid-page {
+  padding: 2rem 3rem 4rem;
+}
+
+.grid-page h1 {
+  margin: 0 0 1.2rem;
+  font-size: 2rem;
+  font-weight: 600;
+}
+
+.grid-page h1 small {
+  margin-left: 1rem;
+  font-size: 1.1rem;
+  color: #999;
+  font-weight: 400;
+}
+
+.grid {
+  display: flex;
+  flex-wrap: wrap;
+  margin-right: -0.8rem;
+}
+
+.grid .tile {
+  width: 14.2rem;
+  height: 10.6rem;
+  margin: 0 0.8rem 0.8rem 0;
+}
+
+/* ---------- viewer ---------- */
+
+.viewer {
+  position: fixed;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  background: #000;
+  z-index: 10;
+  overflow: hidden;
+}
+
+.viewer img.photo,
+.viewer video {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+
+.viewer .info {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  padding: 2rem 3rem 4rem;
+  background: linear-gradient(rgba(0, 0, 0, 0.75), transparent);
+  font-size: 1.3rem;
+  opacity: 0;
+  transition: opacity 0.3s;
+  pointer-events: none;
+}
+
+.viewer .info.show {
+  opacity: 1;
+}
+
+.viewer .info .name {
+  font-size: 1.5rem;
+  font-weight: 600;
+}
+
+.viewer .info .sub {
+  color: #ccc;
+  margin-top: 0.3rem;
+}
+
+.viewer .toast {
+  position: absolute;
+  left: 50%;
+  bottom: 3rem;
+  transform: translateX(-50%);
+  padding: 0.7rem 1.4rem;
+  border-radius: 2rem;
+  background: rgba(30, 30, 30, 0.9);
+  font-size: 1.2rem;
+  opacity: 0;
+  transition: opacity 0.3s;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.viewer .toast.show {
+  opacity: 1;
+}
+
+.viewer .bar {
+  position: absolute;
+  left: 3rem;
+  right: 3rem;
+  bottom: 2rem;
+  display: flex;
+  align-items: center;
+  font-size: 1.1rem;
+  opacity: 0;
+  transition: opacity 0.3s;
+  pointer-events: none;
+}
+
+.viewer .bar.show {
+  opacity: 1;
+}
+
+.viewer .bar .track {
+  flex: 1;
+  height: 0.4rem;
+  margin: 0 1rem;
+  border-radius: 0.2rem;
+  background: rgba(255, 255, 255, 0.3);
+  overflow: hidden;
+}
+
+.viewer .bar .fill {
+  height: 100%;
+  width: 0;
+  background: #fff;
+}
+
+.viewer .spinner {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 3rem;
+  height: 3rem;
+  margin: -1.5rem 0 0 -1.5rem;
+  border: 0.3rem solid rgba(255, 255, 255, 0.25);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+  display: none;
+}
+
+.viewer .spinner.show {
+  display: block;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.viewer .error {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 45%;
+  text-align: center;
+  font-size: 1.4rem;
+  color: #ccc;
+}
+
+/* Phones and mouse users: tap zones and visible buttons. */
+.viewer .tap {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 25%;
+}
+
+.viewer .tap.prev {
+  left: 0;
+}
+
+.viewer .tap.next {
+  right: 0;
+}
+
+.viewer .close {
+  position: absolute;
+  right: 1.5rem;
+  top: 1.5rem;
+  width: 3.2rem;
+  height: 3.2rem;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.5);
+  font-size: 1.8rem;
+  line-height: 3.2rem;
+  z-index: 3;
+}
+
+/* ---------- PIN ---------- */
+
+.pin {
+  margin: 12vh auto 0;
+  width: 26rem;
+  text-align: center;
+}
+
+.pin h1 {
+  font-size: 2rem;
+  font-weight: 600;
+  margin: 0 0 0.5rem;
+}
+
+.pin p {
+  color: #aaa;
+  font-size: 1.2rem;
+  margin: 0 0 1.5rem;
+}
+
+.pin .dots {
+  height: 3rem;
+  font-size: 2.4rem;
+  letter-spacing: 0.8rem;
+  margin-bottom: 1rem;
+}
+
+.pin .error {
+  color: #ff8a80;
+  min-height: 1.6rem;
+  font-size: 1.1rem;
+  margin-bottom: 0.8rem;
+}
+
+.pin .keys {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.pin .key,
+.btn {
+  width: 7rem;
+  height: 4.2rem;
+  margin: 0.4rem;
+  border-radius: 0.6rem;
+  background: #2a2a2e;
+  font-size: 1.8rem;
+}
+
+.btn {
+  width: auto;
+  padding: 0 2rem;
+  font-size: 1.3rem;
+}

@@ -1,0 +1,31 @@
+[package]
+name = "photos-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+axum = "0.8.9"
+blake3 = "1.8.7"
+futures-core = "0.3.34"
+if-addrs = "0.15.0"
+photos-core = { version = "0.1.0", path = "../core" }
+qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
+quick-xml = "0.42.0"
+rust-embed = { version = "8.13.0", features = ["include-exclude"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+socket2 = "0.6.5"
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "macros", "fs", "sync", "process", "io-util", "time"] }
+tokio-util = { version = "0.7.20", features = ["io"] }
+tower = { version = "0.5.3", features = ["util"] }
+tower-http = { version = "0.7.1", features = ["cors", "fs"] }
+tracing = "0.1.44"
+uuid = { version = "1.29.0", features = ["v4"] }
+
+[dev-dependencies]
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "tiff"] }
+tempfile = "3.27.0"
+tower = { version = "0.5.3", features = ["util"] }
