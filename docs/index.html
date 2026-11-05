@@ -7,275 +7,273 @@
 <meta name="description" content="Memora is a free, offline photo and video library for Windows with TV streaming. Your photos never leave your PC.">
 <meta property="og:title" content="Memora: private, offline photo library for Windows">
 <meta property="og:description" content="Your memories. Private. Offline. On your TV.">
-<meta property="og:image" content="https://boseakash7.github.io/memora/img/p03.jpg">
+<meta property="og:image" content="https://boseakash7.github.io/memora/img/app-timeline.jpg">
 <link rel="icon" href="favicon.svg">
 <style>
-:root{--bg:#0b1020;--bg2:#0f172a;--fg:#e5e9f5;--muted:#93a0bd;--card:#141c34;--line:#222c4a;--a:#818cf8;--b:#f472b6;--c:#38bdf8}
+/* Material 3 (light), in the spirit of Google Photos */
+:root{
+  --bg:#f8fafd; --surface:#fff; --surface-2:#f0f4f9; --outline:#dadce0; --outline-v:#e3e6ea;
+  --on:#1f1f1f; --on-v:#5f6368;
+  --primary:#0b57d0; --on-primary:#fff; --primary-c:#d3e3fd; --on-primary-c:#041e49;
+  --g-red:#ea4335; --g-blue:#4285f4; --g-green:#34a853; --g-yellow:#fbbc04;
+  --e1:0 1px 2px rgba(60,64,67,.3),0 1px 3px 1px rgba(60,64,67,.15);
+  --e3:0 4px 8px 3px rgba(60,64,67,.15),0 1px 3px rgba(60,64,67,.3);
+  --e5:0 12px 40px rgba(60,64,67,.22);
+  --ease:cubic-bezier(.2,0,0,1);
+}
 *{box-sizing:border-box}
-html{scroll-behavior:smooth}
-body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,"Segoe UI",sans-serif;overflow-x:hidden}
-a{color:var(--a)}
-.wrap{max-width:1100px;margin:0 auto;padding:0 24px}
-img{display:block}
+html{scroll-behavior:smooth;scroll-padding-top:72px}
+body{margin:0;background:var(--bg);color:var(--on);font:16px/1.6 "Google Sans",Roboto,"Segoe UI",system-ui,sans-serif;-webkit-font-smoothing:antialiased;overflow-x:hidden}
+img{display:block;max-width:100%;height:auto}
+a{color:var(--primary)}
+.wrap{max-width:1160px;margin:0 auto;padding:0 24px}
 
-/* nav */
-nav{position:fixed;inset:0 0 auto 0;z-index:50;transition:.3s}
-nav.stuck{background:rgba(11,16,32,.75);backdrop-filter:blur(14px);border-bottom:1px solid var(--line)}
-nav .wrap{display:flex;align-items:center;gap:28px;height:64px}
-.logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:1.15rem;color:var(--fg);text-decoration:none}
-.logo img{width:30px;height:30px}
-nav .links{margin-left:auto;display:flex;gap:24px;align-items:center}
-nav .links a{color:var(--muted);text-decoration:none;font-size:.95rem}
-nav .links a:hover{color:var(--fg)}
-.btn{display:inline-block;padding:13px 26px;border-radius:999px;font-weight:600;text-decoration:none;color:#fff;background:linear-gradient(135deg,#6366f1,#ec4899);box-shadow:0 8px 30px -8px rgba(236,72,153,.6);transition:transform .2s,box-shadow .2s}
-.btn:hover{transform:translateY(-2px);box-shadow:0 14px 36px -8px rgba(236,72,153,.8)}
-.btn.ghost{background:transparent;border:1.5px solid var(--line);box-shadow:none;color:var(--fg)}
-.btn.ghost:hover{border-color:var(--a)}
-nav .btn{padding:8px 18px;font-size:.9rem;color:#fff!important}
+/* top app bar */
+nav{position:sticky;top:0;z-index:50;background:var(--bg);border-bottom:1px solid transparent;transition:border-color .2s,box-shadow .2s}
+nav.stuck{border-color:var(--outline-v);box-shadow:0 1px 0 rgba(0,0,0,.02)}
+nav .wrap{display:flex;align-items:center;height:64px;gap:8px}
+.logo{display:flex;align-items:center;gap:10px;font-size:1.3rem;color:var(--on-v);text-decoration:none;margin-right:auto}
+.logo img{width:32px;height:32px;border-radius:9px}
+.logo b{font-weight:500;color:var(--on)}
+.nl{color:var(--on-v);text-decoration:none;padding:8px 14px;border-radius:999px;font-size:.95rem;font-weight:500;transition:background .2s}
+.nl:hover{background:var(--surface-2);color:var(--on)}
+
+/* buttons */
+.btn{position:relative;display:inline-flex;align-items:center;gap:8px;height:48px;padding:0 28px;border-radius:999px;font:500 1rem "Google Sans",Roboto,sans-serif;text-decoration:none;border:0;cursor:pointer;overflow:hidden;background:var(--primary);color:var(--on-primary);transition:box-shadow .2s,background .2s}
+.btn:hover{box-shadow:var(--e1)}
+.btn::after{content:"";position:absolute;inset:0;background:currentColor;opacity:0;transition:opacity .2s}
+.btn:hover::after{opacity:.08}.btn:active::after{opacity:.14}
+.btn.tonal{background:var(--primary-c);color:var(--on-primary-c)}
+.btn.outl{background:transparent;color:var(--primary);box-shadow:inset 0 0 0 1px var(--outline)}
+.btn.sm{height:40px;padding:0 20px;font-size:.9rem}
 
 /* hero */
-.hero{position:relative;padding:150px 0 90px;text-align:center;overflow:hidden}
-.wall{position:absolute;inset:0;display:flex;gap:14px;opacity:.22;transform:rotate(-8deg) scale(1.3);filter:saturate(1.2)}
-.wall .col{display:flex;flex-direction:column;gap:14px;animation:drift 60s linear infinite;flex:1}
-.wall .col:nth-child(even){animation-direction:reverse;animation-duration:75s}
-.wall img{width:100%;height:230px;object-fit:cover;border-radius:14px}
-@keyframes drift{from{transform:translateY(0)}to{transform:translateY(-50%)}}
-.hero::after{content:"";position:absolute;inset:0;background:radial-gradient(ellipse at 50% 30%,rgba(11,16,32,.35),var(--bg) 78%)}
-.hero .wrap{position:relative;z-index:2}
-.badge{display:inline-flex;align-items:center;gap:8px;padding:6px 14px;border:1px solid var(--line);background:rgba(20,28,52,.7);border-radius:999px;font-size:.85rem;color:var(--muted);margin-bottom:22px}
-.dot{width:8px;height:8px;border-radius:50%;background:#22c55e;box-shadow:0 0 0 0 rgba(34,197,94,.7);animation:pulse 2s infinite}
-@keyframes pulse{70%{box-shadow:0 0 0 10px rgba(34,197,94,0)}100%{box-shadow:0 0 0 0 rgba(34,197,94,0)}}
-h1{font-size:clamp(2.4rem,7vw,4.8rem);line-height:1.05;margin:0 0 18px;letter-spacing:-.03em}
-.grad{background:linear-gradient(90deg,#818cf8,#f472b6,#38bdf8,#818cf8);background-size:300% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:shimmer 8s linear infinite}
-@keyframes shimmer{to{background-position:300% 0}}
-.sub{font-size:1.2rem;color:var(--muted);max-width:620px;margin:0 auto 30px}
+.hero{padding:64px 0 0;text-align:center}
+.chip{display:inline-flex;align-items:center;gap:8px;height:32px;padding:0 14px;border-radius:8px;background:var(--surface);box-shadow:inset 0 0 0 1px var(--outline);font-size:.85rem;color:var(--on-v);font-weight:500}
+.chip i{width:8px;height:8px;border-radius:50%;background:var(--g-green)}
+h1{font-weight:400;font-size:clamp(2.4rem,6.4vw,4.4rem);line-height:1.1;letter-spacing:-.02em;margin:20px auto 16px;max-width:900px}
+h1 em{font-style:normal;background:linear-gradient(90deg,var(--g-blue),var(--g-red) 45%,var(--g-yellow) 75%,var(--g-green));-webkit-background-clip:text;background-clip:text;color:transparent}
+.sub{font-size:1.2rem;color:var(--on-v);max-width:640px;margin:0 auto 28px}
 .cta{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
-.small{font-size:.85rem;color:var(--muted);margin-top:14px}
+.meta{font-size:.85rem;color:var(--on-v);margin-top:14px}
 
-/* app mockup */
-.stage{perspective:1400px;margin-top:64px}
-.app{max-width:960px;margin:0 auto;border-radius:16px;background:#fff;color:#202124;overflow:hidden;box-shadow:0 40px 120px -20px rgba(99,102,241,.55),0 0 0 1px rgba(255,255,255,.08);transform:rotateX(8deg) rotateY(var(--ry,0deg)) translateY(var(--ty,0px));transition:transform .15s ease-out;text-align:left;animation:float 7s ease-in-out infinite}
-@keyframes float{50%{margin-top:-10px}}
-.bar{display:flex;align-items:center;gap:8px;padding:10px 14px;background:#f1f3f4;border-bottom:1px solid #e0e0e0}
-.bar i{width:11px;height:11px;border-radius:50%;background:#ff5f57}.bar i:nth-child(2){background:#febc2e}.bar i:nth-child(3){background:#28c840}
-.bar span{margin-left:10px;font-size:.8rem;color:#5f6368;display:flex;align-items:center;gap:6px}.bar span img{width:16px}
-.search{margin:0 auto;background:#e8eaed;border-radius:999px;padding:4px 16px;font-size:.78rem;color:#5f6368;width:42%}
-.body{display:grid;grid-template-columns:150px 1fr;height:440px}
-.side{padding:12px 8px;font-size:.82rem;border-right:1px solid #eee;background:#fafafa}
-.side div{padding:8px 12px;border-radius:0 999px 999px 0;color:#3c4043}
-.side .on{background:#e8f0fe;color:#1967d2;font-weight:600}
-.main{padding:14px 16px;overflow:hidden}
-.main h4{margin:0 0 8px;font-size:.78rem;color:#5f6368;font-weight:600}
-.g{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;margin-bottom:14px}
-.g{grid-auto-flow:dense}
-.g img{width:100%;height:120px;object-fit:cover;border-radius:3px}
-.g img:nth-child(3n){grid-column:span 2}
-.sel{position:relative}
-.sel::after{content:"✓";position:absolute;top:6px;left:6px;width:18px;height:18px;border-radius:50%;background:#1a73e8;color:#fff;font-size:11px;text-align:center;line-height:18px}
+.shot{border-radius:20px;background:var(--surface);box-shadow:var(--e5),0 0 0 1px var(--outline-v);overflow:hidden}
+.shot .tb{display:flex;align-items:center;gap:8px;height:34px;padding:0 12px;background:var(--surface-2);font-size:.78rem;color:var(--on-v);border-bottom:1px solid var(--outline-v)}
+.shot .tb img{width:16px;height:16px;border-radius:4px}
+.shot .tb s{margin-left:auto;letter-spacing:10px;text-decoration:none;opacity:.6}
+.shot > img{width:100%;height:auto}
+.heroshot{max-width:1040px;margin:56px auto 0;transform:translateY(0);animation:rise 1s var(--ease) both .15s}
+@keyframes rise{from{opacity:0;transform:translateY(40px)}to{opacity:1;transform:none}}
+
+/* marquee: single transform-only animation */
+.marq{margin-top:72px;overflow:hidden;mask-image:linear-gradient(90deg,transparent,#000 8%,#000 92%,transparent);-webkit-mask-image:linear-gradient(90deg,transparent,#000 8%,#000 92%,transparent)}
+.track{display:flex;gap:14px;width:max-content;animation:marq 70s linear infinite;will-change:transform}
+.track img{width:240px;height:160px;object-fit:cover;border-radius:16px}
+@keyframes marq{to{transform:translate3d(-50%,0,0)}}
 
 /* sections */
-section{padding:90px 0}
-.eyebrow{color:var(--b);font-weight:600;font-size:.85rem;letter-spacing:.12em;text-transform:uppercase;margin-bottom:8px}
-h2{font-size:clamp(1.8rem,4vw,2.8rem);line-height:1.15;margin:0 0 14px;letter-spacing:-.02em}
-.lead{color:var(--muted);max-width:620px;margin:0 0 40px}
+section{padding:96px 0}
+.eyebrow{color:var(--primary);font-weight:500;font-size:.9rem;letter-spacing:.04em;margin-bottom:8px}
+h2{font-weight:400;font-size:clamp(1.9rem,4vw,2.9rem);line-height:1.15;letter-spacing:-.01em;margin:0 0 14px}
+.lead{color:var(--on-v);font-size:1.1rem;max-width:620px;margin:0}
 .center{text-align:center}.center .lead{margin-inline:auto}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:18px}
-.card{position:relative;background:var(--card);border:1px solid var(--line);border-radius:18px;padding:26px;transition:transform .25s,border-color .25s,box-shadow .25s;overflow:hidden}
-.card:hover{transform:translateY(-6px);border-color:var(--a);box-shadow:0 20px 50px -20px rgba(129,140,248,.5)}
-.card .ic{width:44px;height:44px;border-radius:12px;display:grid;place-items:center;font-size:1.4rem;background:linear-gradient(135deg,rgba(99,102,241,.25),rgba(236,72,153,.25));margin-bottom:14px}
-.card h3{margin:0 0 6px}.card p{margin:0;color:var(--muted)}
+
+/* bento */
+.bento{display:grid;grid-template-columns:repeat(6,1fr);gap:16px;margin-top:48px}
+.tile{background:var(--surface);border-radius:28px;padding:28px;box-shadow:inset 0 0 0 1px var(--outline-v);overflow:hidden;display:flex;flex-direction:column;gap:10px;transition:box-shadow .25s var(--ease),transform .25s var(--ease)}
+.tile:hover{box-shadow:var(--e3);transform:translateY(-3px)}
+.tile h3{margin:0;font-weight:500;font-size:1.25rem}
+.tile p{margin:0;color:var(--on-v)}
+.tile .ic{width:48px;height:48px;border-radius:16px;display:grid;place-items:center;background:var(--primary-c);color:var(--primary);margin-bottom:6px}
+.tile .ic svg{width:26px;height:26px;fill:currentColor}
+.t-a{grid-column:span 4;grid-row:span 2;background:var(--primary-c);box-shadow:none}
+.t-a p{color:#1f3a6b}
+.t-b{grid-column:span 2}.t-c{grid-column:span 2}.t-d{grid-column:span 3}.t-e{grid-column:span 3}
+.t-a .pic{margin:auto -28px -28px;border-radius:20px 20px 0 0;box-shadow:var(--e3);overflow:hidden;margin-top:18px}
+.t-a .pic img{width:100%;height:330px;object-fit:cover;object-position:center 40%}
+.pic2{border-radius:16px;overflow:hidden;box-shadow:inset 0 0 0 1px var(--outline-v);margin-top:8px}
+.pic2 img{width:100%}
+.t-b .ic{background:#fce8e6;color:var(--g-red)}.t-c .ic{background:#e6f4ea;color:var(--g-green)}.t-d .ic{background:#fef7e0;color:#b06000}
 
 /* TV */
-.tvsec{background:linear-gradient(180deg,var(--bg),var(--bg2) 50%,var(--bg))}
-.tvgrid{display:grid;grid-template-columns:1fr 1.2fr;gap:50px;align-items:center}
-.cast{position:relative;display:flex;align-items:center;gap:0;margin-top:20px}
-.pc{width:120px;height:78px;border-radius:8px;background:#1e293b;border:3px solid #334155;display:grid;place-items:center;font-size:.75rem;color:var(--muted)}
-.line{flex:1;height:3px;position:relative;background:repeating-linear-gradient(90deg,var(--a) 0 8px,transparent 8px 16px);background-size:16px 3px;animation:flow 1s linear infinite;min-width:60px}
-@keyframes flow{to{background-position:16px 0}}
-.tv{position:relative;border-radius:14px;border:8px solid #1e293b;background:#000;box-shadow:0 30px 80px -20px rgba(56,189,248,.4);aspect-ratio:16/9;overflow:hidden}
-.tv::after{content:"";position:absolute;left:50%;bottom:-24px;width:40%;height:8px;background:#1e293b;border-radius:0 0 8px 8px;transform:translateX(-50%)}
-.tv img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;animation:slide 12s infinite}
-.tv img:nth-child(2){animation-delay:4s}.tv img:nth-child(3){animation-delay:8s}
-@keyframes slide{0%{opacity:0;transform:scale(1)}8%,30%{opacity:1}38%{opacity:0;transform:scale(1.08)}100%{opacity:0}}
-.tvlabel{position:absolute;left:14px;bottom:12px;z-index:3;background:rgba(0,0,0,.6);padding:4px 10px;border-radius:6px;font-size:.75rem}
+.tvwrap{display:grid;grid-template-columns:1fr 1.1fr;gap:56px;align-items:center}
+.tvbox{background:var(--surface-2);border-radius:32px;padding:40px 32px 56px;position:relative}
+.tv{position:relative;border-radius:12px;border:7px solid #202124;background:#000;aspect-ratio:16/9;overflow:hidden;box-shadow:var(--e5)}
+.tv::after{content:"";position:absolute;inset:0;box-shadow:inset 0 0 40px rgba(0,0,0,.25);pointer-events:none}
+.tv img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;animation:slide 15s infinite}
+.tv img:nth-child(2){animation-delay:5s}.tv img:nth-child(3){animation-delay:10s}
+@keyframes slide{0%{opacity:0;transform:scale(1)}7%{opacity:1}33%{opacity:1}40%{opacity:0;transform:scale(1.06)}100%{opacity:0;transform:scale(1.06)}}
+.stand{width:28%;height:8px;background:#202124;border-radius:0 0 8px 8px;margin:0 auto}
+.tvlabel{position:absolute;left:12px;bottom:10px;z-index:3;background:rgba(32,33,36,.72);color:#fff;padding:3px 10px;border-radius:999px;font-size:.75rem}
+.cast{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);display:flex;align-items:center;gap:10px;font-size:.8rem;color:var(--on-v)}
+.cast span{width:8px;height:8px;border-radius:50%;background:var(--g-blue);animation:blip 1.6s infinite}
+.cast span:nth-child(3){animation-delay:.2s}.cast span:nth-child(4){animation-delay:.4s}
+@keyframes blip{0%,100%{opacity:.2}50%{opacity:1}}
+.checks{list-style:none;padding:0;margin:22px 0 0;display:grid;gap:10px}
+.checks li{display:flex;gap:12px;align-items:flex-start;color:var(--on-v)}
+.checks svg{flex:none;width:22px;height:22px;fill:var(--g-green);margin-top:2px}
 
 /* gallery */
-.masonry{columns:4 200px;column-gap:14px}
-.masonry div{break-inside:avoid;margin-bottom:14px;border-radius:14px;overflow:hidden}
-.masonry img{width:100%;transition:transform .6s}
-.masonry div:hover img{transform:scale(1.08)}
-.credit{font-size:.8rem;color:var(--muted);margin-top:10px}
+.masonry{columns:4 220px;column-gap:14px;margin-top:40px}
+.masonry div{break-inside:avoid;margin-bottom:14px;border-radius:20px;overflow:hidden}
+.masonry img{width:100%;transition:transform .5s var(--ease)}
+.masonry div:hover img{transform:scale(1.05)}
+.credit{font-size:.82rem;color:var(--on-v);margin-top:6px}
 
-/* steps */
-.steps{position:relative;display:grid;gap:22px;max-width:700px;margin:0 auto}
-.steps::before{content:"";position:absolute;left:21px;top:10px;bottom:10px;width:2px;background:var(--line)}
-.steps .fill{position:absolute;left:21px;top:10px;width:2px;background:linear-gradient(var(--a),var(--b));height:var(--p,0%);max-height:calc(100% - 20px)}
-.step{position:relative;display:flex;gap:20px;align-items:flex-start}
-.num{flex:none;width:44px;height:44px;border-radius:50%;background:var(--card);border:2px solid var(--line);display:grid;place-items:center;font-weight:700;z-index:1}
-.step.in .num{border-color:var(--b);background:linear-gradient(135deg,#6366f1,#ec4899)}
-.step p{margin:2px 0 0;color:var(--muted)}
-code{background:var(--card);border:1px solid var(--line);padding:2px 8px;border-radius:6px;font-size:.9em}
+/* stepper */
+.steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;margin-top:44px}
+.step{background:var(--surface);border-radius:28px;padding:26px;box-shadow:inset 0 0 0 1px var(--outline-v)}
+.num{width:40px;height:40px;border-radius:50%;display:grid;place-items:center;background:var(--primary);color:#fff;font-weight:500;margin-bottom:14px}
+.step h3{margin:0 0 6px;font-weight:500;font-size:1.1rem}.step p{margin:0;color:var(--on-v);font-size:.95rem}
+code{background:var(--surface-2);padding:2px 8px;border-radius:8px;font:.88em Consolas,monospace;color:var(--on)}
 
 /* roadmap */
-.road{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px}
-.rc{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:22px;border-top:4px solid var(--c)}
-.rc:nth-child(2){border-top-color:var(--a)}.rc:nth-child(3){border-top-color:var(--b)}.rc:nth-child(4){border-top-color:#fb923c}
-.rc h3{margin:0 0 2px}.rc .t{font-size:.8rem;color:var(--muted);margin-bottom:10px}
-.rc ul{margin:0;padding-left:18px;color:var(--muted)}
+.road{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;margin-top:44px}
+.rc{background:var(--surface);border-radius:28px;padding:26px;box-shadow:inset 0 0 0 1px var(--outline-v)}
+.rc .tag{display:inline-block;padding:2px 12px;border-radius:8px;font-size:.78rem;font-weight:500;margin-bottom:12px}
+.rc:nth-child(1) .tag{background:#e6f4ea;color:#0d652d}.rc:nth-child(2) .tag{background:var(--primary-c);color:var(--on-primary-c)}
+.rc:nth-child(3) .tag{background:#fef7e0;color:#7a4b00}.rc:nth-child(4) .tag{background:#fce8e6;color:#a50e0e}
+.rc h3{margin:0 0 8px;font-weight:500}.rc ul{margin:0;padding-left:18px;color:var(--on-v)}.rc li{margin:3px 0}
 
-/* final cta */
-.final{text-align:center;position:relative;overflow:hidden}
-.final::before{content:"";position:absolute;left:50%;top:50%;width:700px;height:700px;transform:translate(-50%,-50%);background:radial-gradient(circle,rgba(99,102,241,.3),transparent 65%);animation:breathe 6s ease-in-out infinite}
-@keyframes breathe{50%{transform:translate(-50%,-50%) scale(1.2)}}
-.final .wrap{position:relative}
-.final .iconbig{width:96px;margin:0 auto 20px;animation:spin 30s linear infinite}
-@keyframes spin{to{transform:rotate(360deg)}}
-footer{text-align:center;color:var(--muted);padding:36px 0;border-top:1px solid var(--line);font-size:.9rem}
+/* final */
+.final{padding:40px 0 96px}
+.fcard{background:var(--primary-c);border-radius:40px;padding:64px 28px;text-align:center}
+.fcard img{width:72px;height:72px;margin:0 auto 18px;border-radius:20px}
+.fcard .lead{color:#1f3a6b;margin:0 auto 26px}
+footer{text-align:center;color:var(--on-v);padding:0 0 40px;font-size:.9rem}
 
-/* reveal */
-.rv{opacity:0;transform:translateY(30px);transition:opacity .8s,transform .8s}
+/* reveal: opacity/transform only */
+.rv{opacity:0;transform:translateY(24px);transition:opacity .7s var(--ease),transform .7s var(--ease)}
 .rv.in{opacity:1;transform:none}
-.cards .rv:nth-child(2),.road .rv:nth-child(2){transition-delay:.1s}
-.cards .rv:nth-child(3),.road .rv:nth-child(3){transition-delay:.2s}
-.cards .rv:nth-child(4),.road .rv:nth-child(4){transition-delay:.3s}
-.cards .rv:nth-child(5){transition-delay:.4s}.cards .rv:nth-child(6){transition-delay:.5s}
+.d1{transition-delay:.08s}.d2{transition-delay:.16s}.d3{transition-delay:.24s}
 
-@media(max-width:820px){.tvgrid{grid-template-columns:1fr}.body{grid-template-columns:1fr}.side{display:none}nav .links a:not(.btn){display:none}}
-@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}.rv{opacity:1;transform:none}.tv img:first-child{opacity:1}}
+@media(max-width:860px){
+  .bento{grid-template-columns:1fr}.bento>*{grid-column:auto!important;grid-row:auto!important}
+  .tvwrap{grid-template-columns:1fr}.nl{display:none}
+}
+@media(prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation:none!important;transition:none!important}
+  .rv,.heroshot{opacity:1;transform:none}.tv img:first-child{opacity:1}
+}
 </style>
 </head>
 <body>
 
 <nav id="nav"><div class="wrap">
-  <a class="logo" href="#top"><img src="favicon.svg" alt="">Memora</a>
-  <div class="links">
-    <a href="#features">Features</a><a href="#tv">TV</a><a href="#start">Get started</a><a href="#roadmap">Roadmap</a>
-    <a class="btn" href="https://github.com/boseakash7/memora/releases/latest">Download</a>
-  </div>
+  <a class="logo" href="#top"><img src="favicon.svg" alt=""><span><b>Memora</b></span></a>
+  <a class="nl" href="#features">Features</a><a class="nl" href="#tv">TV</a><a class="nl" href="#start">Get started</a><a class="nl" href="#roadmap">Roadmap</a>
+  <a class="btn sm" href="https://github.com/boseakash7/memora/releases/latest">Download</a>
 </div></nav>
 
-<header class="hero" id="top">
-  <div class="wall" aria-hidden="true">
-    <div class="col"><img src="img/p01.jpg" alt=""><img src="img/p05.jpg" alt=""><img src="img/p09.jpg" alt=""><img src="img/p01.jpg" alt=""><img src="img/p05.jpg" alt=""><img src="img/p09.jpg" alt=""></div>
-    <div class="col"><img src="img/p02.jpg" alt=""><img src="img/p06.jpg" alt=""><img src="img/p10.jpg" alt=""><img src="img/p02.jpg" alt=""><img src="img/p06.jpg" alt=""><img src="img/p10.jpg" alt=""></div>
-    <div class="col"><img src="img/p03.jpg" alt=""><img src="img/p07.jpg" alt=""><img src="img/p11.jpg" alt=""><img src="img/p03.jpg" alt=""><img src="img/p07.jpg" alt=""><img src="img/p11.jpg" alt=""></div>
-    <div class="col"><img src="img/p04.jpg" alt=""><img src="img/p08.jpg" alt=""><img src="img/p12.jpg" alt=""><img src="img/p04.jpg" alt=""><img src="img/p08.jpg" alt=""><img src="img/p12.jpg" alt=""></div>
+<header class="hero" id="top"><div class="wrap">
+  <span class="chip"><i></i>100% vibe coded &middot; free &amp; open source</span>
+  <h1>Your memories.<br><em>Private. Offline. On your TV.</em></h1>
+  <p class="sub">Memora is a fast photo and video library for Windows. No cloud, no accounts, no uploads. Just your photos, beautifully organized.</p>
+  <div class="cta">
+    <a class="btn" href="https://github.com/boseakash7/memora/releases/latest">Download for Windows</a>
+    <a class="btn outl" href="https://github.com/boseakash7/memora">View on GitHub</a>
   </div>
-  <div class="wrap">
-    <div class="badge rv"><span class="dot"></span>100% vibe coded &middot; free &amp; open source</div>
-    <h1 class="rv">Your memories.<br><span class="grad">Private. Offline. On your TV.</span></h1>
-    <p class="sub rv">Memora is a fast photo and video library for Windows. No cloud, no accounts, no uploads. Just your photos, beautifully organized.</p>
-    <div class="cta rv">
-      <a class="btn" href="https://github.com/boseakash7/memora/releases/latest">Download for Windows</a>
-      <a class="btn ghost" href="https://github.com/boseakash7/memora">View on GitHub</a>
-    </div>
-    <p class="small rv">Windows 10/11, 64-bit &middot; MIT licensed</p>
+  <p class="meta">Windows 10/11, 64-bit &middot; MIT licensed</p>
 
-    <div class="stage rv">
-      <div class="app" id="app">
-        <div class="bar"><i></i><i></i><i></i><span><img src="favicon.svg" alt="">Memora</span><div class="search">Search your photos</div></div>
-        <div class="body">
-          <div class="side"><div class="on">Photos</div><div>Explore</div><div>Albums</div><div>Favorites</div><div>Places</div><div>Utilities</div><div>Trash</div><div>Settings</div></div>
-          <div class="main">
-            <h4>Today</h4>
-            <div class="g"><img src="img/p03.jpg" alt=""><img class="sel" src="img/p01.jpg" alt=""><img src="img/p05.jpg" alt=""><img src="img/p02.jpg" alt=""><img src="img/p07.jpg" alt=""><img src="img/p12.jpg" alt=""></div>
-            <h4>Last weekend</h4>
-            <div class="g"><img src="img/p06.jpg" alt=""><img src="img/p10.jpg" alt=""><img src="img/p08.jpg" alt=""><img src="img/p04.jpg" alt=""><img src="img/p09.jpg" alt=""><img src="img/p11.jpg" alt=""></div>
-          </div>
-        </div>
-      </div>
-    </div>
+  <div class="shot heroshot">
+    <div class="tb"><img src="favicon.svg" alt="">Memora<s>&minus; &#9633; &times;</s></div>
+    <img src="img/app-timeline.jpg" width="1264" height="781" alt="Memora photo timeline showing sample landscape photos">
   </div>
+</div>
+  <div class="marq" aria-hidden="true"><div class="track">
+    <img src="img/p01.jpg" alt=""><img src="img/p05.jpg" alt=""><img src="img/p09.jpg" alt=""><img src="img/p03.jpg" alt=""><img src="img/p07.jpg" alt=""><img src="img/p11.jpg" alt=""><img src="img/p02.jpg" alt=""><img src="img/p06.jpg" alt=""><img src="img/p10.jpg" alt=""><img src="img/p04.jpg" alt=""><img src="img/p08.jpg" alt=""><img src="img/p12.jpg" alt="">
+    <img src="img/p01.jpg" alt=""><img src="img/p05.jpg" alt=""><img src="img/p09.jpg" alt=""><img src="img/p03.jpg" alt=""><img src="img/p07.jpg" alt=""><img src="img/p11.jpg" alt=""><img src="img/p02.jpg" alt=""><img src="img/p06.jpg" alt=""><img src="img/p10.jpg" alt=""><img src="img/p04.jpg" alt=""><img src="img/p08.jpg" alt=""><img src="img/p12.jpg" alt="">
+  </div></div>
 </header>
 
 <section id="features"><div class="wrap">
-  <div class="center"><div class="eyebrow rv">Features</div><h2 class="rv">Everything you like about cloud photos.<br>Nothing you don't.</h2><p class="lead rv">Memora indexes your existing folders in place. It never moves, edits or uploads a single file.</p></div>
-  <div class="cards">
-    <div class="card rv"><div class="ic">🔒</div><h3>Private by design</h3><p>No accounts, no cloud, no telemetry. Your library lives on your PC.</p></div>
-    <div class="card rv"><div class="ic">🖼️</div><h3>Google Photos feel</h3><p>Timeline with a date scrubber, albums, favorites, trash and a full-screen viewer.</p></div>
-    <div class="card rv"><div class="ic">📺</div><h3>Stream to your TV</h3><p>Shows up as a media server on smart TVs, plus a remote-friendly web page.</p></div>
-    <div class="card rv"><div class="ic">🗺️</div><h3>Places &amp; map</h3><p>See where photos were taken from GPS data, on an offline map.</p></div>
-    <div class="card rv"><div class="ic">🧹</div><h3>Duplicate finder</h3><p>Finds exact and near-duplicates and cleans up in one click, to the Recycle Bin.</p></div>
-    <div class="card rv"><div class="ic">🎞️</div><h3>HEIC &amp; video</h3><p>iPhone HEIC and common video formats, converted on the fly when needed.</p></div>
+  <div class="center rv"><div class="eyebrow">Features</div><h2>Everything you like about cloud photos.<br>Nothing you don't.</h2><p class="lead">Memora indexes your existing folders in place. It never moves, edits or uploads a single file.</p></div>
+  <div class="bento">
+    <div class="tile t-a rv">
+      <div class="ic" style="background:#fff"><svg viewBox="0 0 24 24"><path d="M21 19V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2zM8.5 13.5l2.5 3 3.5-4.5 4.5 6H5l3.5-4.5z"/></svg></div>
+      <h3>A photo timeline you'll recognise</h3>
+      <p>Photos grouped by day with a date scrubber, a full-screen viewer, favorites, albums and trash. Smooth even on huge libraries.</p>
+      <div class="pic"><img loading="lazy" src="img/app-viewer.jpg" width="1264" height="781" alt="Memora full-screen photo viewer"></div>
+    </div>
+    <div class="tile t-b rv d1"><div class="ic"><svg viewBox="0 0 24 24"><path d="M12 1 3 5v6c0 5.5 3.8 10.7 9 12 5.2-1.3 9-6.5 9-12V5l-9-4zm0 10.99h7c-.5 4.1-3.3 7.8-7 8.9V12H5V6.3l7-3.1v8.79z"/></svg></div><h3>Private by design</h3><p>No accounts, no cloud, no telemetry. Your library lives on your PC.</p></div>
+    <div class="tile t-c rv d2"><div class="ic"><svg viewBox="0 0 24 24"><path d="M12 2a7 7 0 0 0-7 7c0 5.3 7 13 7 13s7-7.7 7-13a7 7 0 0 0-7-7zm0 9.5A2.5 2.5 0 1 1 12 6.5a2.5 2.5 0 0 1 0 5z"/></svg></div><h3>Places &amp; map</h3><p>See where photos were taken from GPS data, on an offline map.</p></div>
+    <div class="tile t-d rv"><div class="ic"><svg viewBox="0 0 24 24"><path d="M16 1H4a2 2 0 0 0-2 2v14h2V3h12V1zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H8V7h11v14z"/></svg></div><h3>Duplicate finder</h3><p>Finds exact and near-duplicates and cleans up in one click, to the Recycle Bin.</p>
+      <div class="pic2"><img loading="lazy" src="img/app-explore.jpg" width="970" height="240" alt="Memora Explore page with Map, Places and Videos"></div></div>
+    <div class="tile t-e rv d1"><div class="ic" style="background:#e8f0fe"><svg viewBox="0 0 24 24"><path d="M4 8h16v10H4V8zm-2-2v14h20V6H2zm6 16h8v-1H8v1zM17.7 2.3l-1.4 1.4L12 2 7.7 3.7 6.3 2.3 12 0z" style="opacity:0"/><path d="M21 3H3a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h5v2h8v-2h5a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm0 14H3V5h18v12z"/></svg></div><h3>HEIC &amp; video</h3><p>iPhone HEIC and common video formats, converted on the fly when a codec isn't supported.</p></div>
   </div>
 </div></section>
 
-<section class="tvsec" id="tv"><div class="wrap tvgrid">
-  <div>
-    <div class="eyebrow rv">TV streaming</div>
-    <h2 class="rv">Your library on the big screen.</h2>
-    <p class="lead rv" style="margin-bottom:0">Turn on TV sharing and pick Memora from your TV's media sources (DLNA/UPnP), or open the <code>/tv</code> page in the TV browser. Everything stays on your home network.</p>
-    <div class="cast rv"><div class="pc">Your PC</div><div class="line"></div><div class="pc" style="border-color:#38bdf8">Your TV</div></div>
+<section id="tv" style="background:var(--surface)"><div class="wrap tvwrap">
+  <div class="rv">
+    <div class="eyebrow">TV streaming</div>
+    <h2>Your library on the big screen.</h2>
+    <p class="lead">Turn on TV sharing and Memora shows up as a media server on your smart TV, or open the <code>/tv</code> page in the TV browser.</p>
+    <ul class="checks">
+      <li><svg viewBox="0 0 24 24"><path d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg>DLNA/UPnP: pick Memora in your TV's media sources</li>
+      <li><svg viewBox="0 0 24 24"><path d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg>Remote-friendly web page with slideshow</li>
+      <li><svg viewBox="0 0 24 24"><path d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg>Stays on your home network. Nothing goes to the internet.</li>
+    </ul>
+    <div class="pic2 rv" style="margin-top:22px;max-width:480px"><img loading="lazy" src="img/app-sharing.jpg" width="850" height="250" alt="Memora TV and network sharing setting"></div>
   </div>
-  <div class="rv"><div class="tv"><img src="img/p03.jpg" alt=""><img src="img/p06.jpg" alt=""><img src="img/p05.jpg" alt=""><div class="tvlabel">Memora &middot; Slideshow</div></div></div>
+  <div class="rv d1"><div class="tvbox">
+    <div class="tv"><img loading="lazy" src="img/p03.jpg" alt=""><img loading="lazy" src="img/p06.jpg" alt=""><img loading="lazy" src="img/p05.jpg" alt=""><div class="tvlabel">Memora &middot; Slideshow</div></div>
+    <div class="stand"></div>
+    <div class="cast">Your PC <span></span><span></span><span></span> Your TV</div>
+  </div></div>
 </div></section>
 
 <section><div class="wrap">
-  <div class="center"><div class="eyebrow rv">Your moments</div><h2 class="rv">Made for the photos you love.</h2></div>
-  <div class="masonry rv" style="margin-top:34px">
+  <div class="center rv"><div class="eyebrow">Your moments</div><h2>Made for the photos you love.</h2></div>
+  <div class="masonry rv">
     <div><img loading="lazy" src="img/p01.jpg" alt="Mountain sunrise above clouds"></div>
     <div><img loading="lazy" src="img/p09.jpg" alt="Road through red rocks"></div>
     <div><img loading="lazy" src="img/p05.jpg" alt="Beach at sunrise"></div>
     <div><img loading="lazy" src="img/p10.jpg" alt="Sunlit forest"></div>
     <div><img loading="lazy" src="img/p03.jpg" alt="Boat on a turquoise lake"></div>
-    <div><img loading="lazy" src="img/p07.jpg" alt="Road in desert canyon"></div>
+    <div><img loading="lazy" src="img/p07.jpg" alt="Road in a canyon"></div>
     <div><img loading="lazy" src="img/p06.jpg" alt="Milky way over mountains"></div>
     <div><img loading="lazy" src="img/p11.jpg" alt="Forest bridge"></div>
   </div>
-  <p class="credit">Sample photos from <a href="https://unsplash.com">Unsplash</a>. They are placeholders for illustration and are not included in the app.</p>
+  <p class="credit">Sample photos from <a href="https://unsplash.com">Unsplash</a>, also used in the app screenshots. They are not included in Memora.</p>
 </div></section>
 
-<section id="start"><div class="wrap">
-  <div class="center"><div class="eyebrow rv">Get started</div><h2 class="rv">Try it in 3 minutes</h2></div>
-  <div class="steps" id="steps" style="margin-top:34px"><div class="fill"></div>
-    <div class="step rv"><div class="num">1</div><div><strong>Install FFmpeg</strong><p>Needed for video and HEIC. Run <code>winget install Gyan.FFmpeg</code></p></div></div>
-    <div class="step rv"><div class="num">2</div><div><strong>Download and install Memora</strong><p>Get the installer from <a href="https://github.com/boseakash7/memora/releases/latest">Releases</a>. If SmartScreen warns (not code-signed yet), choose <em>More info, then Run anyway</em>.</p></div></div>
-    <div class="step rv"><div class="num">3</div><div><strong>Add a folder</strong><p>Open Settings, add a photo folder and watch your library fill in.</p></div></div>
-    <div class="step rv"><div class="num">4</div><div><strong>Optional: cast to your TV</strong><p>Turn on TV sharing in Settings, then choose Memora in your TV's media sources.</p></div></div>
+<section id="start" style="background:var(--surface)"><div class="wrap">
+  <div class="center rv"><div class="eyebrow">Get started</div><h2>Try it in 3 minutes</h2></div>
+  <div class="steps">
+    <div class="step rv"><div class="num">1</div><h3>Install FFmpeg</h3><p>Needed for video and HEIC. Run <code>winget install Gyan.FFmpeg</code></p></div>
+    <div class="step rv d1"><div class="num">2</div><h3>Install Memora</h3><p>Get the installer from <a href="https://github.com/boseakash7/memora/releases/latest">Releases</a>. If SmartScreen warns (not code-signed yet), choose <em>More info, then Run anyway</em>.</p></div>
+    <div class="step rv d2"><div class="num">3</div><h3>Add a folder</h3><p>Open Settings, add a photo folder and watch your library fill in.</p></div>
+    <div class="step rv d3"><div class="num">4</div><h3>Cast to your TV</h3><p>Optional: turn on TV sharing, then choose Memora in your TV's media sources.</p></div>
   </div>
 </div></section>
 
 <section id="roadmap"><div class="wrap">
-  <div class="center"><div class="eyebrow rv">Roadmap</div><h2 class="rv">Where Memora is going</h2><p class="lead rv">Always offline, always yours.</p></div>
+  <div class="center rv"><div class="eyebrow">Roadmap</div><h2>Where Memora is going</h2><p class="lead">Always offline, always yours.</p></div>
   <div class="road">
-    <div class="rc rv"><h3>Now</h3><div class="t">v0.1 &middot; shipped</div><ul><li>Timeline &amp; viewer</li><li>Albums, search, trash</li><li>Map &amp; duplicates</li><li>TV streaming</li></ul></div>
-    <div class="rc rv"><h3>Next</h3><div class="t">v0.2</div><ul><li>Bundled FFmpeg</li><li>RAW photo support</li><li>Signed installer</li></ul></div>
-    <div class="rc rv"><h3>Soon</h3><div class="t">v0.3</div><ul><li>Offline face grouping</li><li>Search "dog on a beach"</li><li>Memories</li></ul></div>
-    <div class="rc rv"><h3>Later</h3><div class="t">v0.4+</div><ul><li>Encrypted private vault</li><li>Basic editing</li><li>Backup to NAS</li></ul></div>
+    <div class="rc rv"><span class="tag">Shipped &middot; v0.1</span><h3>Now</h3><ul><li>Timeline &amp; viewer</li><li>Albums, search, trash</li><li>Map &amp; duplicates</li><li>TV streaming</li></ul></div>
+    <div class="rc rv d1"><span class="tag">v0.2</span><h3>Next</h3><ul><li>Bundled FFmpeg</li><li>RAW photo support</li><li>Signed installer</li></ul></div>
+    <div class="rc rv d2"><span class="tag">v0.3</span><h3>Soon</h3><ul><li>Offline face grouping</li><li>Search "dog on a beach"</li><li>Memories</li></ul></div>
+    <div class="rc rv d3"><span class="tag">v0.4+</span><h3>Later</h3><ul><li>Encrypted private vault</li><li>Basic editing</li><li>Backup to NAS</li></ul></div>
   </div>
-  <p class="center rv" style="margin-top:24px"><a href="https://github.com/boseakash7/memora/blob/main/ROADMAP.md">Read the full roadmap</a></p>
+  <p class="center" style="margin-top:24px"><a href="https://github.com/boseakash7/memora/blob/main/ROADMAP.md">Read the full roadmap</a></p>
 </div></section>
 
-<section class="final"><div class="wrap">
-  <img class="iconbig" src="favicon.svg" alt="">
-  <h2 class="rv">Bring your photos home.</h2>
-  <p class="lead rv">Free, open source, and honest about how it was made: <strong>this whole app was vibe coded</strong> with an AI assistant. It works great for me, but keep backups and report bugs.</p>
-  <div class="cta rv"><a class="btn" href="https://github.com/boseakash7/memora/releases/latest">Download for Windows</a><a class="btn ghost" href="https://github.com/boseakash7/memora/issues">Report an issue</a></div>
-</div></section>
+<section class="final"><div class="wrap"><div class="fcard rv">
+  <img src="favicon.svg" alt="">
+  <h2>Bring your photos home.</h2>
+  <p class="lead">Free, open source, and honest about how it was made: <strong>this whole app was vibe coded</strong> with an AI assistant. It works great for me, but keep backups and report bugs.</p>
+  <div class="cta"><a class="btn" href="https://github.com/boseakash7/memora/releases/latest">Download for Windows</a><a class="btn tonal" href="https://github.com/boseakash7/memora/issues" style="background:#fff">Report an issue</a></div>
+</div></div></section>
 
 <footer>Memora &middot; MIT licensed &middot; <a href="https://github.com/boseakash7/memora">GitHub</a></footer>
 
 <script>
+// One cheap, passive listener; no layout reads in scroll.
 const nav=document.getElementById('nav');
-addEventListener('scroll',()=>{nav.classList.toggle('stuck',scrollY>20);updateSteps()},{passive:true});
-const io=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}}),{threshold:.15});
+let stuck=false;
+addEventListener('scroll',()=>{const s=scrollY>8;if(s!==stuck){stuck=s;nav.classList.toggle('stuck',s)}},{passive:true});
+const io=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}}),{threshold:.12,rootMargin:'0px 0px -40px 0px'});
 document.querySelectorAll('.rv').forEach(el=>io.observe(el));
-document.querySelectorAll('.step').forEach(el=>io.observe(el));
-// app mockup tilts with the mouse
-const app=document.getElementById('app');
-document.querySelector('.stage').addEventListener('mousemove',e=>{
-  const r=e.currentTarget.getBoundingClientRect();
-  app.style.setProperty('--ry',((e.clientX-r.left)/r.width-.5)*10+'deg');
-});
-document.querySelector('.stage').addEventListener('mouseleave',()=>app.style.setProperty('--ry','0deg'));
-// steps progress line
-const steps=document.getElementById('steps');
-function updateSteps(){
-  const r=steps.getBoundingClientRect();
-  const p=Math.min(1,Math.max(0,(innerHeight*.7-r.top)/r.height));
-  steps.style.setProperty('--p',p*100+'%');
-}
-updateSteps();
 </script>
 </body>
 </html>
