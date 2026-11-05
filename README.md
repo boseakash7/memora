@@ -20,7 +20,7 @@ Think Google Photos, but everything stays on your PC.
 
 ## Download
 Grab the latest installer from the [Releases page](../../releases/latest) (Windows 10/11, 64-bit),
-or visit the [project website](https://OWNER.github.io/Memora/).
+or visit the [project website](https://boseakash7.github.io/memora/).
 
 Memora uses **FFmpeg** for videos and HEIC. Install it and make sure `ffmpeg` and `ffprobe` are on your `PATH`
 (`winget install Gyan.FFmpeg`).
