@@ -222,12 +222,12 @@ async fn dlna_description_and_browsing() {
     assert_eq!(n.get("/dlna/cds.xml").await.0, StatusCode::OK);
     assert_eq!(n.get("/dlna/icon.png").await.0, StatusCode::OK);
 
-    // Root: six folders.
+    // Root: seven folders.
     let (status, root) = n.browse("0", "BrowseDirectChildren", 0, 0).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(tag(&root, "TotalMatches"), "6");
+    assert_eq!(tag(&root, "TotalMatches"), "7");
     let root = didl(&root);
-    for title in ["Timeline", "Albums", "Places", "Favorites", "Videos", "Folders"] {
+    for title in ["Timeline", "Albums", "People", "Places", "Favorites", "Videos", "Folders"] {
         assert!(root.contains(&format!("<dc:title>{title}</dc:title>")), "{title} in {root}");
     }
 
@@ -245,6 +245,16 @@ async fn dlna_description_and_browsing() {
     assert!(items.contains("http://192.168.0.100:8200/dlna/m/"));
     assert!(items.contains("object.item.imageItem.photo"));
     assert!(items.contains("DLNA.ORG_PN=JPEG_TN"));
+    // Samsung TVs cache thumbnails by file name, so every item needs its own.
+    let thumb_urls: Vec<&str> = items.split("/dlna/m/").skip(1).filter_map(|s| s.split('<').next()).filter(|u| u.contains("/tn-")).collect();
+    assert!(!thumb_urls.is_empty());
+    for url in &thumb_urls {
+        let (id, file) = url.split_once('/').unwrap();
+        assert_eq!(file, format!("tn-{id}.jpg"), "file name carries the item id");
+        assert_eq!(n.get(&format!("/dlna/m/{url}")).await.0, StatusCode::OK, "{url}");
+    }
+    let names: std::collections::HashSet<_> = thumb_urls.iter().map(|u| u.split_once('/').unwrap().1).collect();
+    assert!(thumb_urls.len() < 2 || names.len() > 1, "thumbnail file names differ between items");
 
     // Paging: one at a time.
     let (_, first) = n.browse(&month_id, "BrowseDirectChildren", 0, 1).await;
@@ -270,6 +280,26 @@ async fn dlna_description_and_browsing() {
     assert!(didl(&meta).contains(&format!("parentID=\"{folder_id}:Trip\"")));
     let (_, meta) = n.browse("t", "BrowseMetadata", 0, 0).await;
     assert!(didl(&meta).contains("<dc:title>Timeline</dc:title>"));
+
+    // People: only named, visible people are listed; each opens their photos.
+    {
+        let conn = n.library.db().conn().unwrap();
+        conn.execute_batch(&format!(
+            "INSERT INTO persons (id, name, hidden, created_at) VALUES (1, 'Ria', 0, ''), (2, NULL, 0, ''), (3, 'Hid', 1, '');
+             INSERT INTO faces (media_id, x, y, w, h, score, embedding, person_id) VALUES
+               ({pano}, 0.1, 0.1, 0.2, 0.2, 0.9, zeroblob(512), 1),
+               ({pano}, 0.5, 0.1, 0.2, 0.2, 0.9, zeroblob(512), 2),
+               ({pano}, 0.7, 0.1, 0.2, 0.2, 0.9, zeroblob(512), 3);"
+        ))
+        .unwrap();
+    }
+    let (_, people) = n.browse("h", "BrowseDirectChildren", 0, 0).await;
+    assert_eq!(tag(&people, "TotalMatches"), "1");
+    assert!(didl(&people).contains("<dc:title>Ria</dc:title>"));
+    let (_, ria) = n.browse("h:1", "BrowseDirectChildren", 0, 0).await;
+    assert!(didl(&ria).contains("<dc:title>pano.tif</dc:title>"));
+    assert_eq!(n.browse("h:3", "BrowseDirectChildren", 0, 0).await.0, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(n.browse("h:2", "BrowseMetadata", 0, 0).await.0, StatusCode::INTERNAL_SERVER_ERROR);
 
     // Errors are UPnP faults.
     let (status, missing) = n.browse("a:999", "BrowseDirectChildren", 0, 0).await;

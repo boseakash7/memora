@@ -11,6 +11,7 @@ mod explore;
 pub mod lan;
 mod media;
 mod organize;
+mod people;
 mod stream;
 
 use std::net::{Ipv4Addr, SocketAddr};
@@ -34,6 +35,8 @@ pub struct AppState {
     streams: Arc<stream::Streams>,
     /// Sharing on the home network.
     pub lan: Arc<lan::Lan>,
+    /// Face and content recognition; None when not started (tests).
+    pub ai: Option<photos_ml::Ai>,
 }
 
 impl AppState {
@@ -45,7 +48,13 @@ impl AppState {
             thumb_slots: Arc::new(Semaphore::new(slots)),
             streams: Default::default(),
             lan: Default::default(),
+            ai: None,
         }
+    }
+
+    pub fn with_ai(mut self, ai: photos_ml::Ai) -> Self {
+        self.ai = Some(ai);
+        self
     }
 
     pub fn token(&self) -> &str {
@@ -86,8 +95,8 @@ impl LocalServer {
 }
 
 /// Start the server on a random free localhost port. Runs until the process exits.
-pub async fn start_local(library: Library) -> std::io::Result<LocalServer> {
-    let state = AppState::new(library);
+pub async fn start_local(library: Library, ai: photos_ml::Ai) -> std::io::Result<LocalServer> {
+    let state = AppState::new(library).with_ai(ai);
     let token = state.token().to_owned();
     let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let addr = listener.local_addr()?;

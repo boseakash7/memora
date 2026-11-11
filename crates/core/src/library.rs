@@ -14,7 +14,6 @@ use notify::event::{ModifyKind, RenameMode};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode};
 use notify_debouncer_full::{DebounceEventResult, Debouncer, RecommendedCache, new_debouncer};
 use r2d2_sqlite::rusqlite::params;
-use rayon::prelude::*;
 use serde::Serialize;
 
 use crate::db::Db;
@@ -23,7 +22,7 @@ use crate::media::{MEDIA_COLUMNS, Media, Stage};
 use crate::metadata::{self, DATE_FORMAT, Metadata};
 use crate::scan::{self, Change};
 use crate::places::{self, PlaceName};
-use crate::{AppPaths, Result, hash, organize, thumbs};
+use crate::{AppPaths, Result, hash, organize, semantic, thumbs};
 
 /// Indexing progress, pushed to the UI.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -38,8 +37,14 @@ pub struct Status {
     pub pending: u64,
     /// Items in the timeline.
     pub total: u64,
+    /// Of those: photos, videos, and their size on disk in bytes.
+    pub photos: u64,
+    pub videos: u64,
+    pub bytes: u64,
     /// Items that could not be read.
     pub errors: u64,
+    /// Items waiting for face and content recognition (runs after indexing).
+    pub ai_pending: u64,
     /// Goes up whenever the timeline changes, so the UI knows to reload it.
     pub revision: u64,
 }
@@ -72,9 +77,11 @@ struct Inner {
     watcher: Mutex<Option<Watcher>>,
     watched: Mutex<HashSet<PathBuf>>,
     stop: AtomicBool,
+    semantic: semantic::Index,
 }
 
-const BATCH: usize = 32;
+/// Pending items read from the database at a time.
+const FETCH: usize = 128;
 const EMIT_EVERY: Duration = Duration::from_millis(300);
 
 impl Library {
@@ -95,6 +102,7 @@ impl Library {
             watcher: Mutex::new(None),
             watched: Mutex::new(HashSet::new()),
             stop: AtomicBool::new(false),
+            semantic: semantic::Index::default(),
         });
 
         let weak = Arc::downgrade(&inner);
@@ -117,6 +125,11 @@ impl Library {
             .name("library-trash".into())
             .spawn(move || trash_inner.purge_loop())?;
 
+        let dates_inner = inner.clone();
+        std::thread::Builder::new()
+            .name("library-video-dates".into())
+            .spawn(move || dates_inner.refresh_video_dates())?;
+
         inner.refresh_counts();
         inner.queue(Job::All);
         Ok(Library { inner })
@@ -128,6 +141,26 @@ impl Library {
 
     pub fn paths(&self) -> &AppPaths {
         &self.inner.paths
+    }
+
+    /// CLIP vectors for searching by what is in the pictures.
+    pub fn semantic(&self) -> &semantic::Index {
+        &self.inner.semantic
+    }
+
+    /// Recognition made progress: update the counts (throttled). `changed` also tells open
+    /// lists to reload, e.g. when new people appeared.
+    pub fn report_ai(&self, changed: bool) {
+        if changed {
+            self.inner.status.lock().unwrap().revision += 1;
+        }
+        self.inner.refresh_counts();
+        self.inner.emit(changed);
+    }
+
+    /// True once stopped by [`Library::shutdown`].
+    pub fn is_stopped(&self) -> bool {
+        self.inner.stop.load(Ordering::SeqCst)
     }
 
     pub fn status(&self) -> Status {
@@ -240,18 +273,29 @@ impl Inner {
             Ok(c.query_row(
                 "SELECT count(*) FILTER (WHERE stage >= ?1 AND trashed_at IS NULL),
                         count(*) FILTER (WHERE stage < ?2),
-                        count(*) FILTER (WHERE error IS NOT NULL)
+                        count(*) FILTER (WHERE error IS NOT NULL),
+                        count(*) FILTER (WHERE stage = ?3),
+                        count(*) FILTER (WHERE stage >= ?1 AND trashed_at IS NULL AND kind = 'photo'),
+                        count(*) FILTER (WHERE stage >= ?1 AND trashed_at IS NULL AND kind = 'video'),
+                        coalesce(sum(size) FILTER (WHERE stage >= ?1 AND trashed_at IS NULL), 0)
                  FROM media WHERE missing = 0",
-                [Stage::METADATA, Stage::DONE],
-                |r| Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)? as u64, r.get::<_, i64>(2)? as u64)),
+                [Stage::METADATA, Stage::DONE, Stage::HASH],
+                |r| {
+                    let n = |i| r.get::<_, i64>(i).map(|n| n as u64);
+                    Ok(([n(0)?, n(1)?, n(2)?, n(3)?], [n(4)?, n(5)?, n(6)?]))
+                },
             )?)
         });
         match counts {
-            Ok((total, pending, errors)) => {
+            Ok(([total, pending, errors, ai_pending], [photos, videos, bytes])) => {
                 let mut s = self.status.lock().unwrap();
                 s.total = total;
+                s.photos = photos;
+                s.videos = videos;
+                s.bytes = bytes;
                 s.pending = pending;
                 s.errors = errors;
+                s.ai_pending = ai_pending;
             }
             Err(e) => tracing::error!("cannot count library items: {e}"),
         }
@@ -303,6 +347,53 @@ impl Inner {
                 }
             }
             std::thread::sleep(Duration::from_secs(5));
+        }
+    }
+
+    // ---------- one-off upgrades ----------
+
+    /// Read the dates of already indexed videos again with the current rules, once (the
+    /// flag is set by migration 8). Only the date and offset are updated.
+    fn refresh_video_dates(&self) {
+        const FLAG: &str = "_refreshVideoDates";
+        let run = || -> Result<usize> {
+            let flagged: bool = self.db.conn()?.query_row("SELECT count(*) FROM settings WHERE key = ?1", [FLAG], |r| r.get(0))?;
+            if !flagged {
+                return Ok(0);
+            }
+            let videos: Vec<(i64, String, i64)> = {
+                let conn = self.db.conn()?;
+                let mut stmt = conn.prepare(
+                    "SELECT id, path, mtime FROM media
+                     WHERE kind = 'video' AND missing = 0 AND stage >= ?1 AND error IS NULL",
+                )?;
+                stmt.query_map([Stage::METADATA], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                    .collect::<std::result::Result<_, _>>()?
+            };
+            let mut changed = 0;
+            for (id, path, mtime) in videos {
+                if self.stop.load(Ordering::SeqCst) {
+                    return Ok(changed); // flag stays, so this resumes next time
+                }
+                let Ok(meta) = metadata::read(Path::new(&path), crate::media::Format::Video) else { continue };
+                let Some(taken) = meta.taken_at else { continue };
+                changed += self.db.conn()?.execute(
+                    "UPDATE media SET taken_at = ?2, tz_offset = ?3
+                     WHERE id = ?1 AND mtime = ?4 AND (taken_at IS NOT ?2 OR tz_offset IS NOT ?3)",
+                    params![id, taken.format(DATE_FORMAT).to_string(), meta.tz_offset, mtime],
+                )?;
+            }
+            self.db.conn()?.execute("DELETE FROM settings WHERE key = ?1", [FLAG])?;
+            Ok(changed)
+        };
+        match run() {
+            Ok(0) => {}
+            Ok(n) => {
+                tracing::info!("corrected the dates of {n} videos");
+                self.status.lock().unwrap().revision += 1;
+                self.emit(true);
+            }
+            Err(e) => tracing::warn!("cannot re-read video dates: {e}"),
         }
     }
 
@@ -380,23 +471,56 @@ impl Inner {
 
     // ---------- processing ----------
 
+    /// Feed pending items to worker threads and store what they find.
+    ///
+    /// Workers take items one at a time from a short queue, so a slow file (a long video, a
+    /// big HEIC) holds up only its own worker. They run at below-normal priority, as do the
+    /// FFmpeg processes they start, so indexing can use most of the CPU without making the
+    /// PC sluggish.
     fn process_loop(&self) {
-        let threads = std::thread::available_parallelism().map(|n| n.get() / 2).unwrap_or(2).clamp(1, 6);
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
-            .thread_name(|i| format!("library-worker-{i}"))
-            .build()
-            .expect("worker pool");
-
-        while !self.stop.load(Ordering::SeqCst) {
-            let batch = match self.next_batch() {
-                Ok(b) => b,
-                Err(e) => {
-                    tracing::error!("cannot read pending items: {e}");
-                    Vec::new()
+        let threads = worker_count();
+        let (job_tx, job_rx) = mpsc::sync_channel::<Media>(threads * 2);
+        let job_rx = Arc::new(Mutex::new(job_rx));
+        let (done_tx, done_rx) = mpsc::channel::<(Media, Outcome)>();
+        for i in 0..threads {
+            let (jobs, done, paths) = (job_rx.clone(), done_tx.clone(), self.paths.clone());
+            let spawned = std::thread::Builder::new().name(format!("library-worker-{i}")).spawn(move || {
+                crate::ffmpeg::mark_background_thread();
+                loop {
+                    let next = jobs.lock().unwrap().recv();
+                    let Ok(m) = next else { break };
+                    let outcome = process(&paths, &m);
+                    if done.send((m, outcome)).is_err() {
+                        break;
+                    }
                 }
-            };
-            if batch.is_empty() {
+            });
+            if let Err(e) = spawned {
+                tracing::error!("cannot start a library worker: {e}");
+            }
+        }
+        drop(done_tx);
+
+        let mut queue: std::collections::VecDeque<Media> = Default::default();
+        let mut in_flight: HashSet<i64> = HashSet::new();
+        let mut last_counts = Instant::now();
+        while !self.stop.load(Ordering::SeqCst) {
+            // Keep every worker busy with one item running and one waiting.
+            while in_flight.len() < threads * 2 {
+                if queue.is_empty() {
+                    match self.next_items(in_flight.len() + FETCH) {
+                        Ok(items) => queue.extend(items.into_iter().filter(|m| !in_flight.contains(&m.id))),
+                        Err(e) => tracing::error!("cannot read pending items: {e}"),
+                    }
+                }
+                let Some(m) = queue.pop_front() else { break };
+                in_flight.insert(m.id);
+                if job_tx.send(m).is_err() {
+                    return;
+                }
+            }
+
+            if in_flight.is_empty() {
                 if self.processing.swap(false, Ordering::SeqCst) {
                     // Places and hashes arrived while working; let open lists pick them up.
                     self.status.lock().unwrap().revision += 1;
@@ -413,8 +537,19 @@ impl Inner {
             }
 
             self.processing.store(true, Ordering::SeqCst);
-            let results: Vec<_> = pool.install(|| batch.par_iter().map(|m| (m, process(&self.paths, m))).collect());
-            match self.save(&results) {
+            let mut results = Vec::new();
+            if let Ok(first) = done_rx.recv_timeout(Duration::from_millis(500)) {
+                results.push(first);
+                results.extend(done_rx.try_iter());
+            }
+            if results.is_empty() {
+                continue;
+            }
+            for (m, _) in &results {
+                in_flight.remove(&m.id);
+            }
+            let refs: Vec<(&Media, &Outcome)> = results.iter().map(|(m, o)| (m, o)).collect();
+            match self.save(&refs) {
                 Ok(visible) => {
                     if visible {
                         self.status.lock().unwrap().revision += 1;
@@ -425,24 +560,28 @@ impl Inner {
                     std::thread::sleep(Duration::from_secs(1));
                 }
             }
-            self.refresh_counts();
-            self.emit(false);
+            // Counting a big library takes a moment, so not after every item.
+            if last_counts.elapsed() >= EMIT_EVERY {
+                last_counts = Instant::now();
+                self.refresh_counts();
+                self.emit(false);
+            }
         }
     }
 
     /// Next items to work on: all metadata first (so the grid fills quickly), newest first.
-    fn next_batch(&self) -> Result<Vec<Media>> {
+    fn next_items(&self, limit: usize) -> Result<Vec<Media>> {
         let conn = self.db.conn()?;
         let mut stmt = conn.prepare_cached(&format!(
             "SELECT {MEDIA_COLUMNS} FROM media WHERE missing = 0 AND stage < ?1
              ORDER BY stage, taken_at DESC LIMIT ?2"
         ))?;
-        let items = stmt.query_map(params![Stage::DONE, BATCH as i64], Media::from_row)?;
+        let items = stmt.query_map(params![Stage::DONE, limit as i64], Media::from_row)?;
         Ok(items.collect::<std::result::Result<_, _>>()?)
     }
 
     /// Store results. Returns true if items became visible in the timeline.
-    fn save(&self, results: &[(&Media, Outcome)]) -> Result<bool> {
+    fn save(&self, results: &[(&Media, &Outcome)]) -> Result<bool> {
         let mut conn = self.db.conn()?;
         let tx = conn.transaction()?;
         let mut visible = false;
@@ -534,6 +673,13 @@ fn analyze(paths: &AppPaths, m: &Media) -> Result<Analysis> {
     Ok(Analysis { blake3, phash, place })
 }
 
+/// Indexing threads: all logical cores but two (left for the app and the rest of Windows),
+/// at most 8. More gain little (HEIC decoding tops out around 6-8 FFmpeg processes on an
+/// 8-core PC) and cost memory: FFmpeg needs ~200 MB to open a tiled phone photo.
+fn worker_count() -> usize {
+    std::thread::available_parallelism().map(|n| n.get().saturating_sub(2)).unwrap_or(2).clamp(1, 8)
+}
+
 fn process(paths: &AppPaths, m: &Media) -> Outcome {
     if m.stage == Stage::NEW {
         // New or changed on disk: anything cached for it is out of date.
@@ -613,6 +759,8 @@ mod tests {
         image::RgbImage::from_pixel(800, 600, image::Rgb([200, 30, 30])).save(root.join("red.jpg")).unwrap();
         image::RgbaImage::new(50, 100).save(root.join("tall.png")).unwrap();
         std::fs::write(root.join("broken.jpg"), b"not a jpeg").unwrap();
+        // A camera RAW file whose 1200x800 preview is shown turned (portrait).
+        crate::raw::test_files::write_raw(&root.join("camera.cr2"), 1200, 800);
         let has_ffmpeg = crate::ffmpeg::available();
         if has_ffmpeg {
             crate::ffmpeg::make_test_video(&root.join("clip.mp4"), &[]);
@@ -623,10 +771,13 @@ mod tests {
         assert!(lib.wait_idle(Duration::from_secs(60)), "indexing finished");
 
         let items = media::timeline(lib.db()).unwrap();
-        let expected = if has_ffmpeg { 4 } else { 3 };
+        let expected = if has_ffmpeg { 5 } else { 4 };
         assert_eq!(items.len(), expected);
         let s = lib.status();
         assert_eq!((s.total, s.pending, s.errors), (expected as u64, 0, 1));
+        assert_eq!((s.photos, s.videos), (4, has_ffmpeg as u64), "the unreadable JPEG still counts as a photo");
+        let on_disk: u64 = std::fs::read_dir(&root).unwrap().map(|e| e.unwrap().metadata().unwrap().len()).sum();
+        assert_eq!(s.bytes, on_disk);
         assert!(s.revision > 0);
 
         for item in &items {
@@ -634,6 +785,13 @@ mod tests {
             match m.name.as_str() {
                 "red.jpg" => assert_eq!((m.width, m.height), (Some(800), Some(600))),
                 "tall.png" => assert_eq!((m.width, m.height), (Some(50), Some(100))),
+                "camera.cr2" => {
+                    assert_eq!((m.width, m.height, m.orientation), (Some(800), Some(1200), 6));
+                    assert_eq!(m.camera_make.as_deref(), Some("Canon"));
+                    // The viewer gets an upright JPEG copy.
+                    let display = image::open(thumbs::ensure_display(lib.paths(), &m).unwrap()).unwrap();
+                    assert_eq!((display.width(), display.height()), (800, 1200));
+                }
                 "clip.mp4" => {
                     assert_eq!((m.width, m.height), (Some(320), Some(240)));
                     assert_eq!(m.duration_ms, Some(2000));
@@ -725,6 +883,46 @@ mod tests {
         let plain = media::info(lib.db(), id_of_width(300)).unwrap();
         assert_eq!((plain.place, plain.details), (None, metadata::Details::default()));
         assert!(matches!(media::info(lib.db(), 9999), Err(crate::Error::NotFound)));
+        lib.shutdown();
+    }
+
+    /// Time the indexing stages on a real folder (files are only read):
+    /// `PHOTOS_BENCH_DIR=folder cargo test -p photos-core --release -- --ignored --nocapture bench_indexing`
+    #[test]
+    #[ignore]
+    fn bench_indexing() {
+        let root = PathBuf::from(std::env::var("PHOTOS_BENCH_DIR").expect("set PHOTOS_BENCH_DIR"));
+        let dir = tempfile::tempdir().unwrap();
+        let lib = start(dir.path());
+        let started = Instant::now();
+        lib.add_folder(&root).unwrap();
+        let count_below = |stage: i64| -> i64 {
+            lib.db()
+                .conn()
+                .unwrap()
+                .query_row("SELECT count(*) FROM media WHERE stage < ?1", [stage], |r| r.get(0))
+                .unwrap()
+        };
+        let mut reported = Stage::NEW;
+        let total = loop {
+            std::thread::sleep(Duration::from_millis(50));
+            let s = lib.status();
+            if s.scanning || s.total + s.pending == 0 {
+                continue;
+            }
+            for stage in [Stage::METADATA, Stage::THUMBNAIL, Stage::HASH] {
+                if stage > reported && count_below(stage) == 0 {
+                    reported = stage;
+                    let name = ["", "metadata (grid filled)", "thumbnails", "hashes"][stage as usize];
+                    println!("{name}: {:.1?}", started.elapsed());
+                }
+            }
+            if reported == Stage::HASH {
+                break s.total;
+            }
+        };
+        let secs = started.elapsed().as_secs_f64();
+        println!("{total} items in {secs:.1} s = {:.1} items/s", total as f64 / secs);
         lib.shutdown();
     }
 

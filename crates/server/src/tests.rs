@@ -223,6 +223,17 @@ async fn organize_favorites_albums_trash_and_search() {
     let (_, m) = h.call("GET", &format!("/api/media/{beach}"), true, None).await;
     assert_eq!(m["favorite"], true);
 
+    // Paths of several items, in the order asked (unknown ids skipped).
+    let (status, paths) = h.call("POST", "/api/media/paths", true, Some(json!({"ids": [forest, 999_999, beach]}))).await;
+    assert_eq!(status, StatusCode::OK);
+    let names: Vec<_> = paths
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| std::path::Path::new(p.as_str().unwrap()).file_name().unwrap().to_str().unwrap())
+        .collect();
+    assert_eq!(names, ["forest.jpg", "beach.jpg"]);
+
     // Albums.
     let (status, album) = h.call("POST", "/api/albums", true, Some(json!({"name": "Holiday", "ids": [beach, forest]}))).await;
     assert_eq!(status, StatusCode::CREATED);
@@ -321,4 +332,80 @@ async fn places_map_and_duplicates() {
     assert_eq!(h.call("GET", "/api/timeline?bbox=10,5,20,95", true, None).await.0, StatusCode::BAD_REQUEST);
     let (status, items) = h.call("GET", "/api/timeline?bbox=-180,-90,180,90", true, None).await;
     assert_eq!((status, items.as_array().unwrap().len()), (StatusCode::OK, 0));
+}
+
+#[tokio::test]
+async fn people_names_merges_and_search() {
+    let h = harness();
+    let photos = h.dir_path.join("Photos");
+    std::fs::create_dir_all(&photos).unwrap();
+    for name in ["a.jpg", "b.jpg", "c.jpg"] {
+        image::RgbImage::from_pixel(400, 300, image::Rgb([90, 120, 160])).save(photos.join(name)).unwrap();
+    }
+    h.call("POST", "/api/folders", true, Some(json!({"path": photos}))).await;
+    let lib = h.library.clone();
+    assert!(tokio::task::spawn_blocking(move || lib.wait_idle(std::time::Duration::from_secs(30))).await.unwrap());
+    let (_, items) = h.call("GET", "/api/timeline", true, None).await;
+    let ids: Vec<i64> = items.as_array().unwrap().iter().map(|i| i["id"].as_i64().unwrap()).collect();
+
+    // Two people as recognition would leave them: P1 in a and b, P2 in c.
+    let (faces, p1, p2) = {
+        let conn = h.library.db().conn().unwrap();
+        conn.execute("INSERT INTO persons (id, created_at) VALUES (1, 'now'), (2, 'now')", []).unwrap();
+        let faces: Vec<i64> = [(ids[0], 1), (ids[1], 1), (ids[2], 2)]
+            .iter()
+            .map(|(m, p)| {
+                conn.execute_batch(&format!(
+                    "INSERT INTO faces (media_id, x, y, w, h, score, embedding, person_id)
+                     VALUES ({m}, 0.4, 0.3, 0.2, 0.3, 0.9, zeroblob(512), {p})"
+                ))
+                .unwrap();
+                conn.last_insert_rowid()
+            })
+            .collect();
+        (faces, 1, 2)
+    };
+
+    let (status, people) = h.call("GET", "/api/people", true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(people.as_array().unwrap().iter().map(|p| p["count"].as_i64().unwrap()).collect::<Vec<_>>(), [2, 1]);
+
+    // Name P1; searching the name finds their photos (the file names don't match).
+    let (status, p) = h.call("PATCH", &format!("/api/people/{p1}"), true, Some(json!({"name": "Ria Sen"}))).await;
+    assert_eq!((status, p["name"].as_str()), (StatusCode::OK, Some("Ria Sen")));
+    let (_, found) = h.call("GET", "/api/timeline?q=ria", true, None).await;
+    assert_eq!(found.as_array().unwrap().len(), 2);
+    let (_, found) = h.call("GET", &format!("/api/timeline?person={p2}"), true, None).await;
+    assert_eq!(found.as_array().unwrap().len(), 1);
+    assert_eq!(h.call("PATCH", &format!("/api/people/{p1}"), true, Some(json!({"nope": 1}))).await.0, StatusCode::UNPROCESSABLE_ENTITY);
+    // A name can be removed again; leaving the field out keeps it.
+    let (_, p) = h.call("PATCH", &format!("/api/people/{p1}"), true, Some(json!({"hidden": false}))).await;
+    assert_eq!(p["name"], "Ria Sen");
+
+    // Faces in a photo, and their picture (made from the photo on first request).
+    let (_, in_a) = h.call("GET", &format!("/api/media/{}/faces", ids[0]), true, None).await;
+    assert_eq!(in_a[0]["person"]["name"], "Ria Sen");
+    let (status, headers, body) = h.raw("GET", &format!("/api/faces/{}/thumb", faces[0]), true, None, &[]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CONTENT_TYPE], "image/jpeg");
+    let img = image::load_from_memory(&body).unwrap();
+    assert_eq!((img.width(), img.height()), (photos_core::thumbs::FACE_SIZE, photos_core::thumbs::FACE_SIZE));
+    assert_eq!(h.call("GET", "/api/faces/999/thumb", true, None).await.0, StatusCode::NOT_FOUND);
+
+    // "Not this person", then merge P2 into P1.
+    let (status, _) = h.call("PUT", &format!("/api/faces/{}/person", faces[1]), true, Some(json!({"person": null}))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(h.call("GET", &format!("/api/people/{p1}"), true, None).await.1["count"], 1);
+    let (status, merged) = h.call("POST", &format!("/api/people/{p1}/merge"), true, Some(json!({"from": [p2]}))).await;
+    assert_eq!((status, merged["count"].as_i64()), (StatusCode::OK, Some(2)));
+    assert_eq!(h.call("GET", &format!("/api/people/{p2}"), true, None).await.0, StatusCode::NOT_FOUND);
+    // A face given a new person by name.
+    let (status, p) = h.call("PUT", &format!("/api/faces/{}/person", faces[1]), true, Some(json!({"newName": "Dev"}))).await;
+    assert_eq!((status, p["name"].as_str()), (StatusCode::OK, Some("Dev")));
+    let (status, _) = h.call("PUT", &format!("/api/faces/{}/person", faces[1]), true, Some(json!({}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // No recognition worker in tests.
+    let (status, ai) = h.call("GET", "/api/ai", true, None).await;
+    assert_eq!((status, ai), (StatusCode::OK, Value::Null));
 }

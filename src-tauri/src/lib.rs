@@ -1,3 +1,6 @@
+mod desktop;
+mod window_chrome;
+
 use std::path::PathBuf;
 
 use photos_core::{AppPaths, Db, Library};
@@ -50,6 +53,37 @@ fn open_with_default_app(path: PathBuf) -> Result<(), String> {
     std::process::Command::new("explorer").arg(&path).spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
+/// Opens the Windows window menu at a point in the window, in CSS pixels.
+#[tauri::command]
+fn show_system_menu(window: tauri::WebviewWindow, x: f64, y: f64) -> Result<(), String> {
+    let hwnd = window.hwnd().map_err(|e| e.to_string())?;
+    let scale = window.scale_factor().unwrap_or(1.0);
+    window_chrome::show_system_menu(hwnd.0 as isize, (x * scale).round() as i32, (y * scale).round() as i32);
+    Ok(())
+}
+
+/// Sets a photo as the desktop background. Windows gets an upright JPEG copy in the data folder,
+/// so HEIC and RAW work too, and the original can be moved or deleted later.
+#[tauri::command]
+async fn set_wallpaper(id: i64, library: State<'_, Library>) -> Result<(), String> {
+    let lib = library.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let media = photos_core::media::get(lib.db(), id).map_err(|e| e.to_string())?;
+        let picture = photos_core::thumbs::ensure_tv(lib.paths(), &media).map_err(|e| e.to_string())?;
+        let wallpaper = lib.paths().data_dir.join("wallpaper.jpg");
+        std::fs::copy(&picture, &wallpaper).map_err(|e| e.to_string())?;
+        desktop::set_wallpaper(&wallpaper)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Where the page's maximize button is (CSS px), so Windows 11 can show Snap Layouts over it.
+#[tauri::command]
+fn set_max_button_rect(right: f64, top: f64, width: f64, height: f64) {
+    window_chrome::set_max_button_rect(right, top, width, height);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt()
@@ -65,7 +99,22 @@ pub fn run() {
             }
         }))
         .plugin(tauri_plugin_dialog::init())
+        // Size, position and maximized state of the window are kept between launches.
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::all() - tauri_plugin_window_state::StateFlags::VISIBLE,
+                )
+                .build(),
+        )
         .setup(|app| {
+            // The window starts hidden, so it doesn't jump when its saved position is restored.
+            if let Some(window) = app.get_webview_window("main") {
+                if let Ok(hwnd) = window.hwnd() {
+                    window_chrome::install_max_button(app.handle(), hwnd.0 as isize);
+                }
+                let _ = window.show();
+            }
             let paths = AppPaths::from_env()?;
             tracing::info!("library data in {}", paths.data_dir.display());
             let db = Db::open(&paths.db_path)?;
@@ -74,7 +123,8 @@ pub fn run() {
             library.subscribe(move |status| {
                 let _ = handle.emit("index-progress", status);
             });
-            let server = tauri::async_runtime::block_on(photos_server::start_local(library.clone()))?;
+            let ai = photos_ml::Ai::start(library.clone(), photos_ml::model_dirs(&paths.data_dir));
+            let server = tauri::async_runtime::block_on(photos_server::start_local(library.clone(), ai))?;
 
             app.manage(ServerInfo {
                 base_url: server.base_url(),
@@ -87,7 +137,14 @@ pub fn run() {
             app.manage(paths);
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![server_info, show_in_explorer, open_with_default_app])
+        .invoke_handler(tauri::generate_handler![
+            server_info,
+            show_in_explorer,
+            open_with_default_app,
+            show_system_menu,
+            set_max_button_rect,
+            set_wallpaper
+        ])
         .build(tauri::generate_context!())
         .expect("error while starting Memora")
         .run(|app, event| {

@@ -1,17 +1,18 @@
 //! Reads capture date, size, camera and location from photos (EXIF) and videos (ffprobe).
 
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
+use std::sync::OnceLock;
 
-use chrono::{DateTime, Local, NaiveDate, NaiveDateTime};
+use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, Offset, TimeZone, Utc};
 use exif::{In, Tag, Value};
 use serde::Serialize;
 use serde_json::Value as Json;
 
 use crate::Result;
-use crate::ffmpeg;
 use crate::media::Format;
+use crate::{ffmpeg, heif, raw};
 
 pub const DATE_FORMAT: &str = "%Y-%m-%dT%H:%M:%S";
 
@@ -35,10 +36,34 @@ pub struct Metadata {
 }
 
 pub fn read(path: &Path, format: Format) -> Result<Metadata> {
-    match format {
-        Format::Video => Ok(from_probe(&ffmpeg::probe(path)?)),
-        _ => read_photo(path, format),
+    let mut meta = match format {
+        Format::Video => {
+            let mtime = path.metadata().and_then(|m| m.modified()).ok().map(DateTime::<Utc>::from);
+            let probe = ffmpeg::probe(path)?;
+            ffmpeg::remember_hdr(path, &probe);
+            from_probe(&probe, mtime, &Local)
+        }
+        _ => read_photo(path, format)?,
+    };
+    // A photo's EXIF date is already local time; the GPS position can still tell its offset.
+    if meta.tz_offset.is_none()
+        && let (Some(taken), Some(lat), Some(lon)) = (meta.taken_at, meta.lat, meta.lon)
+        && let Some(zone) = zone_at(lat, lon)
+    {
+        meta.tz_offset = zone.from_local_datetime(&taken).earliest().map(|t| offset_minutes(t.offset()));
     }
+    Ok(meta)
+}
+
+/// The time zone at a place on Earth (offline lookup).
+pub fn zone_at(lat: f64, lon: f64) -> Option<chrono_tz::Tz> {
+    static FINDER: OnceLock<tzf_rs::DefaultFinder> = OnceLock::new();
+    let name = FINDER.get_or_init(tzf_rs::DefaultFinder::new).get_tz_name(lon, lat);
+    name.parse().ok()
+}
+
+fn offset_minutes(offset: &impl Offset) -> i32 {
+    offset.fix().local_minus_utc() / 60
 }
 
 /// Extra facts for the info panel. They are read from the file when someone opens the
@@ -68,16 +93,62 @@ pub struct Details {
 pub fn details(path: &Path, format: Format) -> Details {
     match format {
         Format::Video => ffmpeg::probe(path).map(|p| video_details(&p)).unwrap_or_default(),
-        _ => File::open(path)
-            .ok()
-            .and_then(|f| exif::Reader::new().read_from_container(&mut BufReader::new(f)).ok())
-            .map(|e| photo_details(&e))
-            .unwrap_or_default(),
+        _ => read_tags(path, format).map(|t| photo_details(&t)).unwrap_or_default(),
     }
 }
 
-fn photo_details(exif: &exif::Exif) -> Details {
-    let field = |tag| exif.get_field(tag, In::PRIMARY);
+/// A photo's EXIF fields. Most files have one EXIF block; Canon CR3 has several.
+struct Tags(Vec<exif::Exif>);
+
+impl Tags {
+    fn field(&self, tag: Tag) -> Option<&exif::Field> {
+        if let [one] = self.0.as_slice() {
+            return one.get_field(tag, In::PRIMARY);
+        }
+        // CR3 blocks are plain TIFFs, so their EXIF and GPS fields read as TIFF tags of the
+        // same number. The numbers don't overlap between the blocks.
+        self.0.iter().flat_map(|e| e.fields()).find(|f| f.ifd_num == In::PRIMARY && f.tag.number() == tag.number())
+    }
+}
+
+/// EXIF of a file, if it has any (plenty of screenshots, PNGs and edited images don't).
+fn read_tags(path: &Path, format: Format) -> Option<Tags> {
+    if format == Format::Raw {
+        return read_raw_tags(path);
+    }
+    let file = File::open(path).ok()?;
+    exif::Reader::new().read_from_container(&mut BufReader::new(file)).ok().map(|e| Tags(vec![e]))
+}
+
+fn read_raw_tags(path: &Path) -> Option<Tags> {
+    const HEAD: u64 = 4 << 20;
+    let reader = exif::Reader::new();
+    // TIFF-based RAW files (CR2, NEF, ARW, DNG...) are one big TIFF with the EXIF near the
+    // start, so read only that much of a 25+ MB file, and all of it only if that fails.
+    let mut head = Vec::new();
+    File::open(path).ok()?.take(HEAD).read_to_end(&mut head).ok()?;
+    let tiff = head.starts_with(&[b'I', b'I', 42, 0]) || head.starts_with(&[b'M', b'M', 0, 42]);
+    let truncated = head.len() as u64 == HEAD;
+    if let Ok(e) = reader.read_raw(head) {
+        return Some(Tags(vec![e]));
+    }
+    if tiff && truncated && let Ok(e) = reader.read_raw(std::fs::read(path).ok()?) {
+        return Some(Tags(vec![e]));
+    }
+    let blocks: Vec<_> = raw::cr3_tiff_blocks(path).into_iter().filter_map(|b| reader.read_raw(b).ok()).collect();
+    if !blocks.is_empty() {
+        return Some(Tags(blocks));
+    }
+    // Others (Fuji RAF, Olympus ORF...): the EXIF of the embedded preview, which describes
+    // the same shot.
+    let raw::Source::Jpeg(offset) = raw::probe(path).ok()?.source else { return None };
+    let mut file = BufReader::new(File::open(path).ok()?);
+    file.seek(SeekFrom::Start(offset)).ok()?;
+    reader.read_from_container(&mut file).ok().map(|e| Tags(vec![e]))
+}
+
+fn photo_details(exif: &Tags) -> Details {
+    let field = |tag| exif.field(tag);
     let ascii = |tag| field(tag).and_then(|f| ascii_value(&f.value));
     let rational = |tag| match &field(tag)?.value {
         Value::Rational(r) => r.first().filter(|x| x.denom != 0).copied(),
@@ -156,26 +227,33 @@ pub fn local_time_from_millis(ms: i64) -> NaiveDateTime {
 // ---------- photos ----------
 
 fn read_photo(path: &Path, format: Format) -> Result<Metadata> {
-    // Plenty of files (screenshots, PNGs, edited images) carry no EXIF at all.
-    let exif = File::open(path)
-        .ok()
-        .and_then(|f| exif::Reader::new().read_from_container(&mut BufReader::new(f)).ok());
-
+    let exif = read_tags(path, format);
     let mut meta = Metadata { orientation: 1, ..Default::default() };
     if let Some(exif) = &exif {
         apply_exif(&mut meta, exif);
     }
 
-    let (w, h) = if format == Format::FfmpegStill {
-        // HEIC/AVIF: FFmpeg ignores rotation for stills, so we rotate ourselves. A display
-        // matrix (`irot`) in the file wins over EXIF, which HEIF readers should ignore.
-        let still = ffmpeg::probe_still(path)?;
-        if let Some(o) = still.orientation() {
-            meta.orientation = o;
+    let (w, h) = match format {
+        Format::FfmpegStill => {
+            // HEIC/AVIF: decoders show the pixels as stored, so we rotate ourselves. The
+            // file's own `irot`/`imir` boxes win over EXIF (the HEIF rule); without them EXIF
+            // applies, which is how older iPhone photos store it.
+            if let Some(info) = heif::read(path) {
+                if let Some(o) = info.orientation {
+                    meta.orientation = o;
+                }
+                (info.width, info.height)
+            } else {
+                let still = ffmpeg::probe_still(path)?;
+                if let Some(o) = still.orientation() {
+                    meta.orientation = o;
+                }
+                (still.width, still.height)
+            }
         }
-        (still.width, still.height)
-    } else {
-        image::ImageReader::open(path)?.with_guessed_format()?.into_dimensions()?
+        // The size of the preview we show (usually the full picture).
+        Format::Raw => raw::probe(path).map(|r| (r.width, r.height))?,
+        _ => image::ImageReader::open(path)?.with_guessed_format()?.into_dimensions()?,
     };
     let (w, h) = if (5..=8).contains(&meta.orientation) { (h, w) } else { (w, h) };
     meta.width = Some(w);
@@ -183,8 +261,8 @@ fn read_photo(path: &Path, format: Format) -> Result<Metadata> {
     Ok(meta)
 }
 
-fn apply_exif(meta: &mut Metadata, exif: &exif::Exif) {
-    let field = |tag| exif.get_field(tag, In::PRIMARY);
+fn apply_exif(meta: &mut Metadata, exif: &Tags) {
+    let field = |tag| exif.field(tag);
     let ascii = |tag| field(tag).and_then(|f| ascii_value(&f.value));
 
     if let Some(o) = field(Tag::Orientation).and_then(|f| f.value.get_uint(0))
@@ -273,7 +351,7 @@ fn valid_coords(lat: f64, lon: f64) -> bool {
 
 // ---------- videos ----------
 
-pub(crate) fn from_probe(probe: &Json) -> Metadata {
+pub(crate) fn from_probe<Z: TimeZone>(probe: &Json, mtime: Option<DateTime<Utc>>, pc_zone: &Z) -> Metadata {
     let mut meta = Metadata { orientation: 1, ..Default::default() };
     let format = &probe["format"];
     let tags = &format["tags"];
@@ -306,21 +384,6 @@ pub(crate) fn from_probe(probe: &Json) -> Metadata {
         .filter(|d| d.is_finite() && *d > 0.0)
         .map(|d| (d * 1000.0).round() as i64);
 
-    // Apple's creationdate keeps the local time and offset; creation_time is UTC.
-    if let Some(dt) = tag("com.apple.quicktime.creationdate")
-        .and_then(|s| DateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%z").ok())
-        .filter(|dt| plausible(&dt.naive_local()))
-    {
-        meta.taken_at = Some(dt.naive_local());
-        meta.tz_offset = Some(dt.offset().local_minus_utc() / 60);
-    } else if let Some(dt) = tag("creation_time")
-        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-        .map(|dt| dt.with_timezone(&Local).naive_local())
-        .filter(plausible)
-    {
-        meta.taken_at = Some(dt);
-    }
-
     meta.camera_make = tag("com.apple.quicktime.make").or(tag("com.android.manufacturer")).map(str::to_owned);
     meta.camera_model = tag("com.apple.quicktime.model").or(tag("com.android.model")).map(str::to_owned);
 
@@ -330,7 +393,71 @@ pub(crate) fn from_probe(probe: &Json) -> Metadata {
         meta.lat = Some(lat);
         meta.lon = Some(lon);
     }
+
+    // Apple's creationdate keeps the local time and offset.
+    if let Some(dt) = tag("com.apple.quicktime.creationdate")
+        .and_then(|s| DateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%z").ok())
+        .filter(|dt| plausible(&dt.naive_local()))
+    {
+        meta.taken_at = Some(dt.naive_local());
+        meta.tz_offset = Some(dt.offset().local_minus_utc() / 60);
+    } else if let Some(written) = tag("creation_time")
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.naive_utc())
+        .filter(plausible)
+    {
+        let place = meta.lat.zip(meta.lon);
+        let (taken, offset) = video_time(written, place, mtime, meta.duration_ms, pc_zone);
+        meta.taken_at = Some(taken);
+        meta.tz_offset = offset;
+    }
     meta
+}
+
+/// Local time and UTC offset (minutes) of a video from its `creation_time` as written.
+///
+/// That should be UTC, and is on phones, but many cameras (and some dashcams and action
+/// cameras) write their clock's local time there. Those are recognised by the file's
+/// modification time: a camera writes the file while recording, so it was last modified
+/// within the video's length of the start time. If the start only lines up when read as
+/// local time, it was written as local time.
+///
+/// The offset comes from the place the video was taken (GPS), else from this PC's time zone.
+fn video_time<Z: TimeZone>(
+    written: NaiveDateTime,
+    place: Option<(f64, f64)>,
+    mtime: Option<DateTime<Utc>>,
+    duration_ms: Option<i64>,
+    pc_zone: &Z,
+) -> (NaiveDateTime, Option<i32>) {
+    let zone = place.and_then(|(lat, lon)| zone_at(lat, lon));
+    let fits_mtime = |start: DateTime<Utc>| {
+        mtime.is_some_and(|m| {
+            let secs = (m - start).num_seconds();
+            (-120..=duration_ms.unwrap_or(0) / 1000 + 600).contains(&secs)
+        })
+    };
+    let as_local_utc = |naive: &NaiveDateTime| match &zone {
+        Some(z) => z.from_local_datetime(naive).earliest().map(|t| t.with_timezone(&Utc)),
+        None => pc_zone.from_local_datetime(naive).earliest().map(|t| t.with_timezone(&Utc)),
+    };
+    let as_utc = written.and_utc();
+    let written_as_local = !fits_mtime(as_utc) && as_local_utc(&written).is_some_and(fits_mtime);
+    if written_as_local {
+        let offset = match &zone {
+            Some(z) => z.from_local_datetime(&written).earliest().map(|t| offset_minutes(t.offset())),
+            None => pc_zone.from_local_datetime(&written).earliest().map(|t| offset_minutes(t.offset())),
+        };
+        return (written, offset);
+    }
+    match &zone {
+        Some(z) => {
+            let local = as_utc.with_timezone(z);
+            (local.naive_local(), Some(offset_minutes(local.offset())))
+        }
+        // Shown in this PC's time zone; the offset there is a guess, so it is not stored.
+        None => (as_utc.with_timezone(pc_zone).naive_local(), None),
+    }
 }
 
 /// Cameras without a clock write 1904/1970 epoch dates; ignore those.
@@ -503,7 +630,7 @@ mod tests {
                 }
             }
         });
-        let m = from_probe(&probe);
+        let m = from_probe(&probe, None, &Utc);
         assert_eq!((m.width, m.height), (Some(1080), Some(1920)));
         assert_eq!(m.duration_ms, Some(12345));
         assert_eq!(m.taken_at.unwrap().format(DATE_FORMAT).to_string(), "2023-07-04T14:34:56");
@@ -521,10 +648,53 @@ mod tests {
             ],
             "format": {"tags": {"creation_time": "1970-01-01T00:00:00.000000Z"}}
         });
-        let m = from_probe(&probe);
+        let m = from_probe(&probe, None, &Utc);
         assert_eq!((m.width, m.height), (Some(640), Some(480)));
         assert_eq!(m.taken_at, None);
         assert_eq!(m.duration_ms, None);
+    }
+
+    fn at(s: &str) -> NaiveDateTime {
+        NaiveDateTime::parse_from_str(s, DATE_FORMAT).unwrap()
+    }
+
+    #[test]
+    fn video_dates_in_utc_are_shown_in_local_time() {
+        let india = chrono::FixedOffset::east_opt(330 * 60).unwrap();
+        let utc = at("2023-01-01T10:00:00");
+        // A phone video: written as UTC, file saved when recording stopped 30 s later.
+        let mtime = Some(utc.and_utc() + chrono::Duration::seconds(30));
+        assert_eq!(video_time(utc, None, mtime, Some(30_000), &india), (at("2023-01-01T15:30:00"), None));
+        // Copied to the PC much later: the modification time says nothing, UTC is assumed.
+        let copied = Some(utc.and_utc() + chrono::Duration::days(200));
+        assert_eq!(video_time(utc, None, copied, Some(30_000), &india).0, at("2023-01-01T15:30:00"));
+    }
+
+    #[test]
+    fn video_dates_a_camera_wrote_in_local_time_are_recognised() {
+        let india = chrono::FixedOffset::east_opt(330 * 60).unwrap();
+        // The camera's clock said 15:30 (India) and it wrote that as if it were UTC.
+        let written = at("2023-01-01T15:30:00");
+        let mtime = Some(at("2023-01-01T10:01:00").and_utc());
+        assert_eq!(video_time(written, None, mtime, Some(60_000), &india), (written, Some(330)));
+    }
+
+    #[test]
+    fn video_dates_use_the_time_zone_where_they_were_taken() {
+        let india = chrono::FixedOffset::east_opt(330 * 60).unwrap();
+        // Filmed in Paris in summer (UTC+2), looked at on a PC in India.
+        let paris = Some((48.8584, 2.2945));
+        let utc = at("2023-07-04T12:34:56");
+        assert_eq!(video_time(utc, paris, None, None, &india), (at("2023-07-04T14:34:56"), Some(120)));
+        // A Paris camera that writes local time.
+        let mtime = Some(at("2023-07-04T10:35:00").and_utc());
+        assert_eq!(video_time(utc, paris, mtime, Some(10_000), &india), (utc, Some(120)));
+    }
+
+    #[test]
+    fn photos_with_gps_get_their_offset() {
+        assert_eq!(zone_at(40.7128, -74.0060), Some(chrono_tz::America::New_York));
+        assert_eq!(zone_at(22.57, 88.36), Some(chrono_tz::Asia::Kolkata));
     }
 
     #[test]

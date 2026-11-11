@@ -1,21 +1,24 @@
 <script lang="ts">
+  import * as act from '../lib/actions'
   import {
     api,
     countryName,
     errorMessage,
+    faceUrl,
     mediaUrl,
-    openWithDefaultApp,
-    showInExplorer,
     type AlbumRef,
+    type Face,
     type Media,
     type MediaInfo,
     type TimelineItem,
   } from '../lib/api'
   import { codecLabel, dateTimeLabel, formatBitrate, formatBytes, formatDuration, formatOffset } from '../lib/dates'
-  import { confirmDialog, dialogs } from '../lib/dialogs.svelte'
+  import { openContextMenu } from '../lib/contextMenu.svelte'
+  import { dialogs } from '../lib/dialogs.svelte'
   import Icon from '../lib/Icon.svelte'
-  import { goAlbum } from '../lib/router.svelte'
+  import { goAlbum, goPerson } from '../lib/router.svelte'
   import { toast } from '../lib/toast.svelte'
+  import { titleBarContextMenu } from '../lib/window.svelte'
   import AlbumPicker from './AlbumPicker.svelte'
 
   let {
@@ -23,6 +26,7 @@
     index,
     scope = 'all',
     albumId = null,
+    info: openWithInfo = false,
     onnavigate,
     onclose,
   }: {
@@ -31,6 +35,8 @@
     /** The list being viewed: decides which actions are offered. */
     scope?: 'all' | 'favorites' | 'album' | 'trash'
     albumId?: number | null
+    /** Start with the info panel open. */
+    info?: boolean
     onnavigate: (index: number) => void
     onclose: () => void
   } = $props()
@@ -39,12 +45,14 @@
 
   let details = $state<Media | null>(null)
   let info = $state<MediaInfo | null>(null)
-  let showInfo = $state(false)
+  // svelte-ignore state_referenced_locally
+  let showInfo = $state(openWithInfo)
   let loaded = $state(false)
   /** `converted`: the webview couldn't play the original, so the PC converts it while playing. */
   let videoMode = $state<'original' | 'converted' | 'failed'>('original')
-  let actionError = $state('')
   let albums = $state<AlbumRef[]>([])
+  /** Faces of people (not hidden) in this item. */
+  let faces = $state<Face[]>([])
   let picking = $state(false)
 
   let stageW = $state(0)
@@ -61,9 +69,10 @@
     tx = ty = 0
     loaded = false
     videoMode = 'original'
-    actionError = ''
     details = null
     albums = []
+    faces = []
+    loadFaces(id)
     api
       .media(id)
       .then((m) => {
@@ -85,6 +94,41 @@
       })
       .catch(() => {})
   })
+
+  function loadFaces(id: number) {
+    api.faces
+      .of(id)
+      .then((f) => {
+        if (item.id === id) faces = f.filter((x) => x.person && !x.person.hidden)
+      })
+      .catch(() => {})
+  }
+
+  /** "Not this person": the face leaves the person and stays out of automatic grouping. */
+  async function notThisPerson(face: Face) {
+    const before = face.person
+    if (!before) return
+    const id = item.id
+    try {
+      await api.faces.setPerson(face.id, null)
+      loadFaces(id)
+      toast(`Removed from ${before.name ?? 'this person'}`, {
+        action: {
+          label: 'Undo',
+          run: async () => {
+            try {
+              await api.faces.setPerson(face.id, before.id)
+              loadFaces(id)
+            } catch (e) {
+              toast(errorMessage(e), { error: true })
+            }
+          },
+        },
+      })
+    } catch (e) {
+      toast(errorMessage(e), { error: true })
+    }
+  }
 
   function loadAlbums(id: number) {
     api.items
@@ -129,66 +173,35 @@
     else onclose()
   }
 
-  async function attempt(action: () => Promise<void>) {
-    try {
-      await action()
-    } catch (e) {
-      toast(errorMessage(e), { error: true })
+  /** Actions on the item shown; the same ones as in the grid's menu and selection bar. */
+  function context(): act.ActionContext {
+    return {
+      items: [item],
+      scope,
+      albumId,
+      favorite,
+      inViewer: true,
+      addToAlbum: () => (picking = true),
+      onfavorite: (f) => {
+        if (details) details.favorite = f
+      },
+      onremoved: advance,
+      info: () => (showInfo = !showInfo),
     }
   }
+  const run = (action: (c: act.ActionContext) => void) => () => action(context())
 
-  const toggleFavorite = () =>
-    attempt(async () => {
-      const next = !favorite
-      if (details) details.favorite = next
-      await api.items.favorite([item.id], next)
-      if (!next && scope === 'favorites') advance()
-    })
-
-  const trashItem = () =>
-    attempt(async () => {
-      const id = item.id
-      await api.items.trash([id])
-      advance()
-      toast('Moved to trash', { action: { label: 'Undo', run: () => attempt(() => api.items.restore([id])) } })
-    })
-
-  const restoreItem = () =>
-    attempt(async () => {
-      await api.items.restore([item.id])
-      advance()
-      toast('Restored')
-    })
-
-  const deleteForever = () =>
-    attempt(async () => {
-      const ok = await confirmDialog({
-        title: 'Delete this item?',
-        message: 'The file is moved to the Windows Recycle Bin and removed from the library.',
-        confirmLabel: 'Delete',
-        danger: true,
-      })
-      if (!ok) return
-      const result = await api.items.emptyTrash([item.id])
-      if (result.failed.length > 0) toast(`Could not delete ${result.failed[0]}`, { error: true })
-      else {
-        advance()
-        toast('Moved to the Recycle Bin')
-      }
-    })
-
-  const useAsCover = () =>
-    attempt(async () => {
-      await api.albums.update(albumId!, { coverMediaId: item.id })
-      toast('Album cover updated')
-    })
+  function onmenu(e: MouseEvent) {
+    const { entries } = act.itemMenu(context())
+    openContextMenu(e, entries)
+  }
 
   function onkeydown(e: KeyboardEvent) {
     if (picking || dialogs.current) return
     if (e.key === 'ArrowLeft') go(-1)
     else if (e.key === 'ArrowRight') go(1)
     else if (e.key === 'i') showInfo = !showInfo
-    else if (e.key === 'Delete' && scope !== 'trash') trashItem()
+    else if (e.key === 'Delete' && scope !== 'trash') act.moveToTrash(context())
     else if (e.key === 'Escape') {
       if (scale > 1) resetZoom()
       else onclose()
@@ -242,16 +255,6 @@
     drag = { x: e.clientX, y: e.clientY }
   }
 
-  async function run(action: (path: string) => Promise<void>) {
-    actionError = ''
-    if (!details) return
-    try {
-      await action(details.path)
-    } catch (e) {
-      actionError = errorMessage(e)
-    }
-  }
-
   const favorite = $derived(details ? details.favorite : (item.f ?? false))
   const when = $derived(details ? dateTimeLabel(details.takenAt) : null)
   const camera = $derived(
@@ -293,17 +296,20 @@
 
 <div class="viewer" role="dialog" aria-modal="true" aria-label="Photo viewer">
   <div class="viewer-main">
-    <div class="viewer-bar">
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="viewer-bar" data-tauri-drag-region="deep" oncontextmenu={titleBarContextMenu}>
       <button class="icon-btn" title="Back (Esc)" onclick={onclose}><Icon name="arrowBack" /></button>
       <span class="viewer-spacer"></span>
       {#if scope === 'trash'}
-        <button class="btn viewer-btn" onclick={restoreItem}><Icon name="restore" size={20} /> Restore</button>
-        <button class="btn viewer-btn" onclick={deleteForever}><Icon name="deleteForever" size={20} /> Delete</button>
+        <button class="btn viewer-btn" onclick={run(act.restoreFromTrash)}><Icon name="restore" size={20} /> Restore</button>
+        <button class="btn viewer-btn" onclick={run(act.deleteForever)}>
+          <Icon name="deleteForever" size={20} /> Delete
+        </button>
       {:else}
         <button
           class="icon-btn"
           title={favorite ? 'Remove from favorites' : 'Add to favorites'}
-          onclick={toggleFavorite}
+          onclick={run(act.toggleFavorite)}
         >
           <Icon name={favorite ? 'star' : 'starOutline'} />
         </button>
@@ -311,14 +317,14 @@
           <Icon name="libraryAdd" />
         </button>
         {#if albumId !== null}
-          <button class="icon-btn" title="Use as album cover" onclick={useAsCover}><Icon name="photo" /></button>
+          <button class="icon-btn" title="Use as album cover" onclick={run(act.useAsCover)}><Icon name="photo" /></button>
         {/if}
-        <button class="icon-btn" title="Move to trash (Delete)" onclick={trashItem}><Icon name="trash" /></button>
+        <button class="icon-btn" title="Move to trash (Delete)" onclick={run(act.moveToTrash)}><Icon name="trash" /></button>
       {/if}
-      <button class="icon-btn" title="Show in Explorer" onclick={() => run(showInExplorer)} disabled={!details}>
+      <button class="icon-btn" title="Show in Explorer" onclick={run(act.revealInExplorer)}>
         <Icon name="folder" />
       </button>
-      <button class="icon-btn" title="Open with default app" onclick={() => run(openWithDefaultApp)} disabled={!details}>
+      <button class="icon-btn" title="Open with default app" onclick={run(act.openWithDefault)}>
         <Icon name="openExternal" />
       </button>
       <button class="icon-btn" class:active={showInfo} title="Info (I)" onclick={() => (showInfo = !showInfo)}>
@@ -335,6 +341,7 @@
       {onwheel}
       {ondblclick}
       {onpointerdown}
+      oncontextmenu={onmenu}
       {onpointermove}
       onpointerup={() => (drag = null)}
     >
@@ -344,7 +351,7 @@
             <div class="viewer-message">
               <Icon name="brokenImage" size={48} />
               <p>This video's format can't be played here.</p>
-              <button class="btn" onclick={() => run(openWithDefaultApp)} disabled={!details}>
+              <button class="btn" onclick={run(act.openWithDefault)}>
                 <Icon name="openExternal" size={20} /> Open in default player
               </button>
             </div>
@@ -363,7 +370,7 @@
             {#if videoMode === 'converted'}
               <div class="viewer-note">
                 Playing a converted copy; skipping ahead is limited.
-                <button class="link" onclick={() => run(openWithDefaultApp)} disabled={!details}>Open in default player</button>
+                <button class="link" onclick={run(act.openWithDefault)}>Open in default player</button>
               </div>
             {/if}
           {/if}
@@ -394,7 +401,6 @@
         <button class="viewer-nav next" title="Next (→)" onclick={() => go(1)}><Icon name="chevronRight" size={32} /></button>
       {/if}
     </div>
-    {#if actionError}<p class="viewer-error">{actionError}</p>{/if}
   </div>
 
   {#if showInfo}
@@ -403,6 +409,22 @@
         <button class="icon-btn" title="Close" onclick={() => (showInfo = false)}><Icon name="close" /></button>
         <h2>Info</h2>
       </div>
+      {#if faces.length > 0}
+        <h3 class="info-title">People</h3>
+        <div class="face-chips">
+          {#each faces as f (f.id)}
+            <span class="face-chip">
+              <button class="face-chip-main" onclick={() => goPerson(f.person!.id)} title="Show all photos of this person">
+                <img src={faceUrl(f.id)} alt="" draggable="false" />
+                <span class:muted={!f.person!.name}>{f.person!.name ?? 'Unnamed'}</span>
+              </button>
+              <button class="face-chip-x" title="Not {f.person!.name ?? 'this person'}" onclick={() => notThisPerson(f)}>
+                <Icon name="close" size={16} />
+              </button>
+            </span>
+          {/each}
+        </div>
+      {/if}
       {#if details}
         <h3 class="info-title">Details</h3>
         {#if when}
@@ -475,7 +497,7 @@
         {/if}
         <div class="info-row">
           <Icon name="folder" />
-          <button class="link" onclick={() => run(showInExplorer)}>{details.path}</button>
+          <button class="link" onclick={run(act.revealInExplorer)}>{details.path}</button>
         </div>
         <div class="info-row">
           <Icon name="albums" />

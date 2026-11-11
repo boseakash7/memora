@@ -10,7 +10,7 @@ use photos_core::settings::{self, Settings};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::{ApiError, AppState, auth, explore, media, organize};
+use crate::{ApiError, AppState, auth, explore, media, organize, people};
 
 type ApiResult<T> = Result<Json<T>, ApiError>;
 
@@ -26,6 +26,7 @@ pub fn routes(state: AppState) -> Router<AppState> {
         .merge(media::routes())
         .merge(organize::routes())
         .merge(explore::routes())
+        .merge(people::routes())
         .route_layer(middleware::from_fn_with_state(state, auth::require_token))
         // Health check stays public so the UI can tell "server down" from "bad token".
         .route("/health", get(|| async { Json(json!({ "ok": true, "version": env!("CARGO_PKG_VERSION") })) }))
@@ -75,6 +76,10 @@ async fn update_settings(State(s): State<AppState>, Json(patch): Json<Value>) ->
     let updated = blocking(move || settings::update(lib.db(), &patch)).await?;
     // Start, stop or reconfigure network sharing to match.
     s.lan.apply(&s).await;
+    // Recognition switched on/off or between GPU and CPU.
+    if let Some(ai) = &s.ai {
+        ai.refresh();
+    }
     Ok(Json(updated))
 }
 

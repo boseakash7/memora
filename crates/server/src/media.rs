@@ -6,7 +6,7 @@ use axum::body::Body;
 use axum::extract::{Path, Query, Request, State};
 use axum::http::{HeaderValue, header};
 use axum::response::Response;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use photos_core::media::{self, Media, TimelineItem};
 use photos_core::thumbs;
@@ -20,6 +20,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/timeline", get(timeline))
         .route("/media/{id}", get(details))
+        .route("/media/paths", post(paths))
         .route("/media/{id}/info", get(info))
         .route("/media/{id}/thumb", get(thumb))
         .route("/media/{id}/display", get(display))
@@ -28,15 +29,40 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Items for a grid. See `media::Query` for the filters (`scope`, `album`, `q`, `from`, ...).
+/// Search text also finds people by name and pictures by what they show.
 async fn timeline(
     State(s): State<AppState>,
-    Query(q): Query<media::Query>,
+    Query(mut q): Query<media::Query>,
 ) -> Result<Json<Vec<TimelineItem>>, ApiError> {
-    Ok(Json(blocking(move || media::query(s.library.db(), &q)).await?))
+    let items = blocking(move || {
+        let db = s.library.db();
+        if let Some(text) = q.q.clone().filter(|t| !t.trim().is_empty()) {
+            q.also = photos_core::people::media_named(db, &text)?;
+            if let Some(ai) = &s.ai {
+                match ai.search(&text) {
+                    Ok(hits) => q.also.extend(hits.into_iter().map(|(id, _)| id)),
+                    Err(e) => tracing::warn!("search by content failed: {e}"),
+                }
+            }
+        }
+        media::query(db, &q)
+    })
+    .await?;
+    Ok(Json(items))
 }
 
 async fn details(State(s): State<AppState>, Path(id): Path<i64>) -> Result<Json<Media>, ApiError> {
     Ok(Json(blocking(move || media::get(s.library.db(), id)).await?))
+}
+
+#[derive(serde::Deserialize)]
+struct Ids {
+    ids: Vec<i64>,
+}
+
+/// File paths of several items (for "Copy file paths").
+async fn paths(State(s): State<AppState>, Json(body): Json<Ids>) -> Result<Json<Vec<PathBuf>>, ApiError> {
+    Ok(Json(blocking(move || media::paths(s.library.db(), &body.ids)).await?))
 }
 
 /// Exposure settings, video codec, place name and the like, read from the file on request.

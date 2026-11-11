@@ -77,11 +77,20 @@ fn works(e: Encoder) -> bool {
     ffmpeg::run(cmd).is_ok()
 }
 
-/// Fits the picture in 1920x1080 (1080x1920 for portrait) without upscaling; even sizes
-/// for the encoder; 8-bit 4:2:0, which every TV decodes. FFmpeg applies rotation itself.
-const VIDEO_FILTER: &str = "scale=w='if(gte(iw,ih),min(iw,1920),min(iw,1080))':\
+/// Fits the picture in 1920x1080 (1080x1920 for portrait) without upscaling, with even
+/// sizes for the encoder. FFmpeg applies rotation itself.
+const SCALE_FILTER: &str = "scale=w='if(gte(iw,ih),min(iw,1920),min(iw,1080))':\
      h='if(gte(iw,ih),min(ih,1080),min(ih,1920))':\
-     force_original_aspect_ratio=decrease:force_divisible_by=2,format=yuv420p";
+     force_original_aspect_ratio=decrease:force_divisible_by=2";
+
+/// Scaling, then 8-bit 4:2:0, which every TV decodes. HDR is tone mapped to SDR (after
+/// scaling, which makes it much cheaper for 4K sources).
+fn video_filter(hdr: Option<ffmpeg::Hdr>) -> String {
+    match hdr {
+        Some(hdr) => format!("{SCALE_FILTER},{}", ffmpeg::tone_map_filter(hdr)),
+        None => format!("{SCALE_FILTER},format=yuv420p"),
+    }
+}
 
 /// FFmpeg command that converts `media` from `start_secs` on and writes to stdout.
 /// stdout and stderr are piped.
@@ -101,7 +110,7 @@ fn command_with(media: &Media, container: Container, start_secs: f64, encoder: E
     }
     cmd.arg("-i").arg(&media.path);
     cmd.args(["-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn"]);
-    cmd.args(["-vf", VIDEO_FILTER]);
+    cmd.args(["-vf", &video_filter(ffmpeg::hdr_of(&media.path))]);
     cmd.args(encoder.args());
     // A keyframe every 2 seconds keeps restarts (seeking) and stream starts quick.
     cmd.args(["-force_key_frames", "expr:gte(t,n_forced*2)"]);
@@ -129,33 +138,11 @@ mod tests {
     use std::io::Read;
 
     fn video(mime: &str, v: Option<&str>, a: Option<&str>) -> Media {
-        Media {
-            id: 1,
-            folder_id: 1,
-            path: "clip".into(),
-            name: "clip".into(),
-            size: 0,
-            mtime: 0,
-            kind: Kind::Video,
-            mime: mime.into(),
-            width: None,
-            height: None,
-            duration_ms: None,
-            orientation: 1,
-            taken_at: String::new(),
-            tz_offset: None,
-            camera_make: None,
-            camera_model: None,
-            lat: None,
-            lon: None,
-            favorite: false,
-            missing: false,
-            stage: 3,
-            error: None,
-            video_codec: v.map(Into::into),
-            audio_codec: a.map(Into::into),
-            trashed: false,
-        }
+        let mut m = Media::for_test(std::path::Path::new("clip"), mime);
+        m.kind = Kind::Video;
+        m.video_codec = v.map(Into::into);
+        m.audio_codec = a.map(Into::into);
+        m
     }
 
     #[test]
@@ -193,6 +180,30 @@ mod tests {
             assert!(child.wait().unwrap().success());
             assert!(out.len() > 1000 && check(&out), "{container:?} output looks wrong");
         }
+    }
+
+    #[test]
+    fn hdr_is_converted_to_sdr() {
+        if !ffmpeg::available() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("hdr.mp4");
+        ffmpeg::make_hdr_video(&src, ffmpeg::Hdr::Pq);
+        let mut m = video("video/mp4", Some("hevc"), Some(""));
+        m.path = src;
+        let out = dir.path().join("out.ts");
+        let mut cmd = command_with(&m, Container::Ts, 0.0, Encoder::Cpu);
+        cmd.stdout(std::fs::File::create(&out).unwrap());
+        assert!(cmd.status().unwrap().success());
+
+        let mut probe = ffmpeg::command("ffprobe");
+        probe.args(["-v", "error", "-show_entries", "stream=pix_fmt,color_transfer,color_primaries", "-of", "json"]).arg(&out);
+        let info: serde_json::Value = serde_json::from_slice(&ffmpeg::run(probe).unwrap()).unwrap();
+        let s = &info["streams"][0];
+        assert_eq!((s["pix_fmt"].as_str(), s["color_transfer"].as_str()), (Some("yuv420p"), Some("bt709")), "{s}");
+        let px = ffmpeg::decode_frame(&out, None, 64).unwrap().to_rgb8().get_pixel(10, 10).0;
+        assert!(px[0] > 170 && px[1] < 90, "colours survive: {px:?}");
     }
 
     #[test]

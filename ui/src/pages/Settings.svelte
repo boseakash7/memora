@@ -11,6 +11,7 @@
     type Theme,
   } from '../lib/api'
   import Icon from '../lib/Icon.svelte'
+  import AiCard from '../components/AiCard.svelte'
   import SharingCard from '../components/SharingCard.svelte'
   import { isBusy, library } from '../lib/library.svelte'
   import { applyTheme } from '../lib/theme'
@@ -183,6 +184,7 @@
   {/if}
 
   {#if settings}
+    <AiCard {settings} onchange={(s) => (settings = s)} />
     <SharingCard {settings} onchange={(s) => (settings = s)} />
   {/if}
 

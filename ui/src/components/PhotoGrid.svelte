@@ -12,6 +12,7 @@
     onopen,
     ontoggle,
     ontoggleday,
+    onmenu,
   }: {
     items: TimelineItem[]
     /** Ids of the selected items. */
@@ -21,6 +22,8 @@
     ontoggle: (index: number, range: boolean) => void
     /** Select a whole day (or deselect it, if all of it is selected). `[start, end)` indices. */
     ontoggleday: (start: number, end: number) => void
+    /** Right-click (or Shift+F10 / Menu key) on an item. */
+    onmenu?: (index: number, e: MouseEvent) => void
   } = $props()
 
   const selecting = $derived(selected.size > 0)
@@ -167,9 +170,11 @@
           {#each block.cells as cell (cell.index)}
             {@const item = items[cell.index]}
             {@const isSelected = selected.has(item.id)}
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div
               class="cell"
               class:selected={isSelected}
+              oncontextmenu={(e) => onmenu?.(cell.index, e)}
               style:top="{block.top}px"
               style:left="{cell.left}px"
               style:width="{cell.width}px"

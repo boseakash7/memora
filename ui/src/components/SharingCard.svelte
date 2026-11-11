@@ -192,61 +192,15 @@
         </label>
       </div>
       <p class="muted small">
-        The PIN (4–8 digits) is asked once per device. When Windows asks whether to allow Memora on networks,
-        allow it on private networks, or TVs won't be able to connect.
+        The PIN (4–8 digits) is asked once per device. Windows Firewall lets TVs reach Memora on networks set to
+        Private only. If a TV can't connect, open Windows Settings › Network &amp; internet and make sure your home
+        network is Private. (If Windows asks whether to allow Memora, allow it on private networks.)
       </p>
     </div>
   {/if}
 </div>
 
 <style>
-  .switch {
-    position: relative;
-    flex: none;
-    width: 44px;
-    height: 24px;
-    margin-top: 4px;
-  }
-
-  .switch input {
-    opacity: 0;
-    width: 0;
-    height: 0;
-  }
-
-  .slider {
-    position: absolute;
-    inset: 0;
-    border-radius: 12px;
-    background: var(--border);
-    cursor: pointer;
-    transition: background 0.15s;
-  }
-
-  .slider::before {
-    content: '';
-    position: absolute;
-    left: 3px;
-    top: 3px;
-    width: 18px;
-    height: 18px;
-    border-radius: 50%;
-    background: #fff;
-    transition: transform 0.15s;
-  }
-
-  .switch input:checked + .slider {
-    background: var(--accent);
-  }
-
-  .switch input:checked + .slider::before {
-    transform: translateX(20px);
-  }
-
-  .switch input:focus-visible + .slider {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-  }
 
   .share-status {
     margin: 8px 0 16px;
@@ -288,33 +242,6 @@
     background: #fff;
   }
 
-  .options {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    margin-top: 8px;
-  }
-
-  .check {
-    display: flex;
-    align-items: flex-start;
-    gap: 10px;
-    cursor: pointer;
-  }
-
-  .check input {
-    accent-color: var(--accent);
-    width: 18px;
-    height: 18px;
-    margin: 2px 0 0;
-    flex: none;
-  }
-
-  .check .muted {
-    display: block;
-    font-size: 13px;
-  }
-
   .fields {
     display: flex;
     flex-wrap: wrap;
@@ -348,8 +275,4 @@
     width: 90px;
   }
 
-  .small {
-    font-size: 13px;
-    margin: 0;
-  }
 </style>

@@ -38,6 +38,8 @@ pub enum Format {
     Raster,
     /// HEIC, HEIF, AVIF: decoded with FFmpeg.
     FfmpegStill,
+    /// Camera RAW: the embedded JPEG preview is shown (see `raw`).
+    Raw,
     Video,
 }
 
@@ -55,6 +57,23 @@ const TYPES: &[(&str, &str, Format)] = &[
     ("heic", "image/heic", Format::FfmpegStill),
     ("heif", "image/heif", Format::FfmpegStill),
     ("avif", "image/avif", Format::FfmpegStill),
+    ("dng", "image/x-adobe-dng", Format::Raw),
+    ("cr2", "image/x-canon-cr2", Format::Raw),
+    ("cr3", "image/x-canon-cr3", Format::Raw),
+    ("nef", "image/x-nikon-nef", Format::Raw),
+    ("nrw", "image/x-nikon-nrw", Format::Raw),
+    ("arw", "image/x-sony-arw", Format::Raw),
+    ("srf", "image/x-sony-srf", Format::Raw),
+    ("sr2", "image/x-sony-sr2", Format::Raw),
+    ("raf", "image/x-fuji-raf", Format::Raw),
+    ("orf", "image/x-olympus-orf", Format::Raw),
+    ("rw2", "image/x-panasonic-rw2", Format::Raw),
+    ("pef", "image/x-pentax-pef", Format::Raw),
+    ("srw", "image/x-samsung-srw", Format::Raw),
+    ("rwl", "image/x-leica-rwl", Format::Raw),
+    ("3fr", "image/x-hasselblad-3fr", Format::Raw),
+    ("iiq", "image/x-phaseone-iiq", Format::Raw),
+    ("erf", "image/x-epson-erf", Format::Raw),
     ("mp4", "video/mp4", Format::Video),
     ("m4v", "video/mp4", Format::Video),
     ("mov", "video/quicktime", Format::Video),
@@ -86,7 +105,7 @@ pub fn format_of_mime(mime: &str) -> Format {
 
 /// Photos the desktop webview cannot show directly, so they get a converted JPEG.
 pub fn needs_display_copy(mime: &str) -> bool {
-    matches!(mime, "image/tiff" | "image/heic" | "image/heif")
+    matches!(mime, "image/tiff" | "image/heic" | "image/heif") || format_of_mime(mime) == Format::Raw
 }
 
 /// Processing progress of an item. Items appear in the timeline from `Metadata` on.
@@ -98,8 +117,10 @@ impl Stage {
     pub const THUMBNAIL: i64 = 2;
     /// File hash, perceptual hash and place name.
     pub const HASH: i64 = 3;
-    /// Last stage of the current pipeline. Later phases add more.
+    /// Last stage of the indexing pipeline. Recognition runs after it, separately.
     pub const DONE: i64 = Stage::HASH;
+    /// Faces and CLIP vector done (by the recognition worker, see `ai`).
+    pub const AI: i64 = 4;
 }
 
 /// Full record for one photo or video.
@@ -172,6 +193,39 @@ impl Media {
     pub fn format(&self) -> Format {
         format_of_mime(&self.mime)
     }
+
+    /// A record for a file that is not in a library, for tests.
+    #[cfg(test)]
+    pub(crate) fn for_test(path: &Path, mime: &str) -> Media {
+        let kind = if format_of_mime(mime) == Format::Video { Kind::Video } else { Kind::Photo };
+        Media {
+            id: 1,
+            folder_id: 1,
+            path: path.to_path_buf(),
+            name: path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+            size: 0,
+            mtime: 0,
+            kind,
+            mime: mime.into(),
+            width: None,
+            height: None,
+            duration_ms: None,
+            orientation: 1,
+            taken_at: String::new(),
+            tz_offset: None,
+            camera_make: None,
+            camera_model: None,
+            lat: None,
+            lon: None,
+            favorite: false,
+            missing: false,
+            stage: Stage::DONE,
+            error: None,
+            video_codec: None,
+            audio_codec: None,
+            trashed: false,
+        }
+    }
 }
 
 pub fn get(db: &Db, id: i64) -> Result<Media> {
@@ -179,6 +233,19 @@ pub fn get(db: &Db, id: i64) -> Result<Media> {
         .query_row(&format!("SELECT {MEDIA_COLUMNS} FROM media WHERE id = ?1"), [id], Media::from_row)
         .optional()?
         .ok_or(Error::NotFound)
+}
+
+/// File paths of items, in the order asked; unknown ids are skipped.
+pub fn paths(db: &Db, ids: &[i64]) -> Result<Vec<PathBuf>> {
+    let conn = db.conn()?;
+    let mut stmt = conn.prepare_cached("SELECT path FROM media WHERE id = ?1")?;
+    let mut out = Vec::with_capacity(ids.len());
+    for &id in ids {
+        if let Some(path) = stmt.query_row([id], |r| r.get::<_, String>(0)).optional()? {
+            out.push(PathBuf::from(path));
+        }
+    }
+    Ok(out)
 }
 
 /// What the info panel shows beyond the stored record.
@@ -257,6 +324,12 @@ pub struct Query {
     /// Items with GPS inside this box: `west,south,east,north` in degrees.
     /// A box with west > east crosses the antimeridian.
     pub bbox: Option<String>,
+    /// Items showing this person.
+    pub person: Option<i64>,
+    /// More items that match the free text `q` besides the file names etc.: people with that
+    /// name and pictures that look like it. Filled in by the server.
+    #[serde(skip)]
+    pub also: Vec<i64>,
 }
 
 const CAMERA_EXPR: &str = "trim(coalesce(camera_make, '') || ' ' || coalesce(camera_model, ''))";
@@ -312,9 +385,23 @@ fn filter(db: &Db, q: &Query) -> Result<(String, Vec<Value>)> {
         args.push(album.into());
     }
 
-    if let Some(m) = q.q.as_deref().and_then(fts_match) {
-        clauses.push("id IN (SELECT rowid FROM media_fts WHERE media_fts MATCH ?)".into());
-        args.push(m.into());
+    const FTS: &str = "id IN (SELECT rowid FROM media_fts WHERE media_fts MATCH ?)";
+    const ALSO: &str = "id IN (SELECT value FROM json_each(?))";
+    match (q.q.as_deref().and_then(fts_match), q.also.is_empty()) {
+        (Some(m), true) => {
+            clauses.push(FTS.into());
+            args.push(m.into());
+        }
+        (Some(m), false) => {
+            clauses.push(format!("({FTS} OR {ALSO})"));
+            args.push(m.into());
+            args.push(serde_json::to_string(&q.also)?.into());
+        }
+        (None, false) => {
+            clauses.push(ALSO.into());
+            args.push(serde_json::to_string(&q.also)?.into());
+        }
+        (None, true) => {}
     }
     if let Some(from) = q.from.as_deref().filter(|s| !s.is_empty()) {
         check_day(from)?;
@@ -339,6 +426,10 @@ fn filter(db: &Db, q: &Query) -> Result<(String, Vec<Value>)> {
         args.push(camera.to_owned().into());
     }
 
+    if let Some(person) = q.person {
+        clauses.push("id IN (SELECT media_id FROM faces WHERE person_id = ?)".into());
+        args.push(person.into());
+    }
     if let Some(place) = q.place {
         clauses.push("place_id = ?".into());
         args.push(place.into());
@@ -475,5 +566,8 @@ mod tests {
         assert_eq!(file_type(Path::new(".trashed-1715478456-IMG1.heic")), None);
         assert!(needs_display_copy("image/heic"));
         assert!(!needs_display_copy("image/jpeg"));
+        assert_eq!(file_type(Path::new("IMG_1.CR2")), Some(("image/x-canon-cr2", Format::Raw)));
+        assert_eq!(file_type(Path::new("a.dng")).unwrap().1, Format::Raw);
+        assert!(needs_display_copy("image/x-adobe-dng"));
     }
 }

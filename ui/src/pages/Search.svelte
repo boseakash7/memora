@@ -80,8 +80,8 @@
               <div class="empty-icon"><Icon name="search" size={56} /></div>
               <h2>No results</h2>
               <p>
-                Nothing matches{q.trim() ? ` “${q.trim()}”` : ''}. Search looks at file and folder names, camera
-                models and album names.
+                Nothing matches{q.trim() ? ` “${q.trim()}”` : ''}. Search looks at what is in your photos, people's
+                names, places, file and folder names, cameras and albums.
               </p>
             </div>
           {/snippet}
@@ -91,7 +91,10 @@
         <div class="empty">
           <div class="empty-icon"><Icon name="search" size={56} /></div>
           <h2>Search your photos</h2>
-          <p>Type a file name, folder, camera model or album name in the search bar, or pick a date range above.</p>
+          <p>
+            Describe what you're looking for (“sunset”, “dog on a beach”), or type a person's name, a place, a
+            file or folder name, a camera or an album. You can also pick a date range above.
+          </p>
         </div>
       </section>
     {/if}

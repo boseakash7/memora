@@ -51,6 +51,43 @@ export type TimelineQuery = {
   place?: number
   /** Items with GPS inside this box: `west,south,east,north` in degrees. */
   bbox?: string
+  /** Items showing this person (see `api.people`). */
+  person?: number
+}
+
+/** Faces of one person, grouped automatically and corrected by the user. */
+export type Person = {
+  id: number
+  /** Null until the user names them. */
+  name: string | null
+  hidden: boolean
+  /** Visible photos and videos they appear in. */
+  count: number
+  /** Face to show for them (see `faceUrl`). */
+  coverFace: number | null
+}
+
+/** A face in a photo; the box is in fractions of the displayed picture. */
+export type Face = {
+  id: number
+  x: number
+  y: number
+  w: number
+  h: number
+  person: { id: number; name: string | null; hidden: boolean } | null
+}
+
+/** Face and content recognition, which runs after indexing. */
+export type AiStatus = {
+  enabled: boolean
+  state: 'starting' | 'off' | 'noModels' | 'waiting' | 'working' | 'idle' | 'error'
+  device: 'gpu' | 'cpu' | null
+  error: string | null
+  modelsDir: string | null
+  /** Folders searched for the model files. */
+  searched: string[]
+  /** Items still to look at. */
+  pending: number
 }
 
 export type Album = {
@@ -159,7 +196,13 @@ export type LibraryStatus = {
   scannedFiles: number
   pending: number
   total: number
+  /** Of `total`: photos, videos, and their size on disk in bytes. */
+  photos: number
+  videos: number
+  bytes: number
   errors: number
+  /** Items waiting for face and content recognition. */
+  aiPending: number
   revision: number
 }
 
@@ -253,10 +296,32 @@ export const api = {
     /** Send trashed files to the Windows Recycle Bin. All trashed items when `ids` is left out. */
     emptyTrash: (ids?: number[]) => request<Deleted>('POST', '/trash/empty', { ids }),
     albums: (id: number) => request<AlbumRef[]>('GET', `/media/${id}/albums`),
+    /** File paths, in the order asked. */
+    paths: (ids: number[]) => request<string[]>('POST', '/media/paths', { ids }),
   },
   places: {
     list: () => request<Place[]>('GET', '/places'),
     get: (id: number) => request<Place>('GET', `/places/${id}`),
+  },
+  people: {
+    list: (hidden = false) => request<Person[]>('GET', `/people${hidden ? '?hidden=true' : ''}`),
+    get: (id: number) => request<Person>('GET', `/people/${id}`),
+    update: (id: number, patch: { name?: string | null; hidden?: boolean; coverFace?: number }) =>
+      request<Person>('PATCH', `/people/${id}`, patch),
+    /** Fold the `from` people into `id`. */
+    merge: (id: number, from: number[]) => request<Person>('POST', `/people/${id}/merge`, { from }),
+  },
+  faces: {
+    of: (mediaId: number) => request<Face[]>('GET', `/media/${mediaId}/faces`),
+    /** Put a face with a person; null means "not this person". */
+    setPerson: (faceId: number, person: number | null) =>
+      request<Person | null>('PUT', `/faces/${faceId}/person`, { person }),
+    newPerson: (faceId: number, newName: string) => request<Person>('PUT', `/faces/${faceId}/person`, { newName }),
+  },
+  ai: {
+    status: () => request<AiStatus | null>('GET', '/ai'),
+    /** Look for the model files again. */
+    refresh: () => request<AiStatus | null>('POST', '/ai/refresh'),
   },
   lan: () => request<LanStatus>('GET', '/lan'),
   mapPoints: () => request<MapPoint[]>('GET', '/map/points'),
@@ -299,6 +364,12 @@ export function mediaUrl(id: number, what: 'thumb' | 'display' | 'original' | 's
   return `${resolved.baseUrl}/api/media/${id}/${what}?${v}token=${resolved.token}`
 }
 
+/** Square picture of a face. */
+export function faceUrl(faceId: number): string {
+  if (!resolved) throw new Error('server info not loaded yet')
+  return `${resolved.baseUrl}/api/faces/${faceId}/thumb?token=${resolved.token}`
+}
+
 /** QR code image (SVG) for a short text such as a URL. */
 export function qrUrl(text: string): string {
   if (!resolved) throw new Error('server info not loaded yet')
@@ -311,6 +382,11 @@ export function openWithDefaultApp(path: string): Promise<void> {
 
 export function showInExplorer(path: string): Promise<void> {
   return invoke('show_in_explorer', { path })
+}
+
+/** Make a photo the Windows desktop background. */
+export function setWallpaper(id: number): Promise<void> {
+  return invoke('set_wallpaper', { id })
 }
 
 /** "India" for `IN`, using the names built into the webview. Falls back to the code. */

@@ -1,10 +1,12 @@
 //! Runs the `ffmpeg` / `ffprobe` executables. They are looked up next to the app's
 //! executable first (where the installer puts them), then on `PATH`.
 
+use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime};
 
 use image::DynamicImage;
 use serde_json::Value;
@@ -32,9 +34,37 @@ pub(crate) fn command(name: &str) -> Command {
         use std::os::windows::process::CommandExt;
         // Don't flash a console window from the GUI app.
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
+        const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
+        let priority = if BACKGROUND.get() { BELOW_NORMAL_PRIORITY_CLASS } else { 0 };
+        cmd.creation_flags(CREATE_NO_WINDOW | priority);
     }
     cmd
+}
+
+thread_local! {
+    static BACKGROUND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Mark the calling thread as background work (indexing, recognition): it runs at
+/// below-normal priority, and so do the FFmpeg processes it starts. Windows then serves the
+/// app's window, video playback and other programs first, so the PC stays responsive while
+/// a big library is indexed.
+pub fn mark_background_thread() {
+    BACKGROUND.set(true);
+    #[cfg(windows)]
+    {
+        use std::ffi::c_void;
+        unsafe extern "system" {
+            fn GetCurrentThread() -> *mut c_void;
+            fn SetThreadPriority(thread: *mut c_void, priority: i32) -> i32;
+        }
+        const THREAD_PRIORITY_BELOW_NORMAL: i32 = -1;
+        // SAFETY: GetCurrentThread returns a pseudo-handle for this thread that needs no
+        // closing; SetThreadPriority only changes its scheduling priority.
+        unsafe {
+            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+        }
+    }
 }
 
 /// Run to completion and return stdout. Kills the process if it hangs.
@@ -102,7 +132,7 @@ fn decode_bmp(cmd: &mut Command) -> Result<DynamicImage> {
 }
 
 /// Decode the video frame at `seek_secs`, scaled down to fit in `max` x `max`.
-/// FFmpeg applies the video's rotation.
+/// FFmpeg applies the video's rotation; HDR video is tone mapped to normal colours.
 pub fn decode_frame(path: &Path, seek_secs: Option<f64>, max: u32) -> Result<DynamicImage> {
     let mut cmd = command("ffmpeg");
     cmd.args(["-v", "error", "-nostdin"]);
@@ -110,8 +140,85 @@ pub fn decode_frame(path: &Path, seek_secs: Option<f64>, max: u32) -> Result<Dyn
         cmd.args(["-ss", &format!("{s:.3}")]);
     }
     cmd.arg("-i").arg(path);
-    cmd.args(["-vf", &scale_filter(max)]);
+    let mut filter = scale_filter(max);
+    if let Some(hdr) = hdr_of(path) {
+        filter = format!("{filter},{}", tone_map_filter(hdr));
+    }
+    cmd.args(["-vf", &filter]);
     decode_bmp(&mut cmd)
+}
+
+// ---------- HDR video ----------
+
+/// How an HDR video encodes brightness. Shown as it is, HDR looks grey and washed out on
+/// normal screens and TVs, so converted copies and thumbnails are tone mapped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hdr {
+    /// PQ (SMPTE ST 2084): HDR10, HDR10+, most Android phones.
+    Pq,
+    /// Hybrid log-gamma: iPhones (also under Dolby Vision 8.4), some cameras.
+    Hlg,
+}
+
+/// The HDR kind of a video's first video stream, if any. Probed once per file and session.
+pub fn hdr_of(path: &Path) -> Option<Hdr> {
+    let modified = path.metadata().and_then(|m| m.modified()).ok();
+    let cache = hdr_cache();
+    if let Some((when, hdr)) = cache.lock().unwrap().get(path)
+        && *when == modified
+    {
+        return *hdr;
+    }
+    let mut cmd = command("ffprobe");
+    cmd.args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=color_transfer", "-of", "json", "-i"])
+        .arg(path);
+    let hdr = run(cmd).ok().and_then(|out| serde_json::from_slice::<Value>(&out).ok()).and_then(|v| hdr_of_probe(&v));
+    cache.lock().unwrap().insert(path.to_path_buf(), (modified, hdr));
+    hdr
+}
+
+/// Note the HDR kind from a full probe made anyway (the metadata stage), so making the
+/// thumbnail later needs no second probe.
+pub(crate) fn remember_hdr(path: &Path, probe: &Value) {
+    let modified = path.metadata().and_then(|m| m.modified()).ok();
+    hdr_cache().lock().unwrap().insert(path.to_path_buf(), (modified, hdr_of_probe(probe)));
+}
+
+type HdrCache = Mutex<HashMap<PathBuf, (Option<SystemTime>, Option<Hdr>)>>;
+
+fn hdr_cache() -> &'static HdrCache {
+    static CACHE: OnceLock<HdrCache> = OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+/// The first real video stream's transfer (cover pictures don't count).
+pub(crate) fn hdr_of_probe(probe: &Value) -> Option<Hdr> {
+    let streams = probe["streams"].as_array()?;
+    let stream = streams
+        .iter()
+        .find(|s| s["codec_type"] == "video" && s["disposition"]["attached_pic"] != 1)
+        .or_else(|| streams.first())?;
+    match stream["color_transfer"].as_str()? {
+        "smpte2084" => Some(Hdr::Pq),
+        "arib-std-b67" => Some(Hdr::Hlg),
+        _ => None,
+    }
+}
+
+/// FFmpeg filters that turn HDR (BT.2020) into 8-bit SDR (BT.709) 4:2:0.
+///
+/// HDR video puts paper white at about 203 nits (ITU-R BT.2408), so that is mapped to SDR
+/// white; the Möbius curve keeps colours below it as they are and squeezes the brighter
+/// highlights into the rest of the range.
+pub fn tone_map_filter(hdr: Hdr) -> String {
+    let transfer = match hdr {
+        Hdr::Pq => "smpte2084",
+        Hdr::Hlg => "arib-std-b67",
+    };
+    format!(
+        "zscale=tin={transfer}:pin=bt2020:min=bt2020nc:t=linear:npl=203,format=gbrpf32le,\
+         zscale=p=bt709,tonemap=tonemap=mobius:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p"
+    )
 }
 
 // ---------- HEIC / HEIF / AVIF ----------
@@ -138,6 +245,22 @@ enum StillSource {
 }
 
 impl Still {
+    /// The layout read from the file's boxes (see `heif`), which saves opening the file in
+    /// FFmpeg twice. None when the boxes don't settle it; then use [`probe_still`].
+    pub fn from_heif(info: &crate::heif::Info) -> Option<Still> {
+        let source = match info.layout.as_ref()? {
+            crate::heif::Layout::Single { stream } => StillSource::Stream(*stream),
+            crate::heif::Layout::Grid { tiles } => StillSource::Grid { tiles: tiles.clone(), x: 0, y: 0 },
+        };
+        Some(Still { width: info.width, height: info.height, rotation: None, source })
+    }
+
+    /// The layout without a display matrix, for comparing with [`Still::from_heif`].
+    #[cfg(test)]
+    fn same_layout(&self, other: &Still) -> bool {
+        (self.width, self.height, &self.source) == (other.width, other.height, &other.source)
+    }
+
     /// EXIF-style orientation (1-8) for the display-matrix rotation, if the file has one.
     pub fn orientation(&self) -> Option<u8> {
         match self.rotation?.rem_euclid(360) {
@@ -265,6 +388,24 @@ pub(crate) fn make_test_video(path: &Path, extra: &[&str]) {
     run(cmd).expect("ffmpeg makes a test video");
 }
 
+/// A 10-bit HEVC clip of one colour (sRGB 200, 60, 40), encoded as HDR with SDR white
+/// at 203 nits, the way phones and cameras record it.
+#[cfg(test)]
+pub(crate) fn make_hdr_video(path: &Path, hdr: Hdr) {
+    let t = match hdr {
+        Hdr::Pq => "smpte2084",
+        Hdr::Hlg => "arib-std-b67",
+    };
+    let mut cmd = command("ffmpeg");
+    cmd.args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=0xC83C28:s=320x240:d=1,format=yuv420p", "-vf"]);
+    cmd.arg(format!(
+        "zscale=tin=bt709:pin=bt709:min=bt709:rin=tv:t={t}:npl=203:p=bt2020:m=bt2020nc:r=tv,format=yuv420p10le"
+    ));
+    cmd.args(["-c:v", "libx265", "-x265-params", "log-level=none", "-color_primaries", "bt2020"]);
+    cmd.args(["-color_trc", t, "-colorspace", "bt2020nc"]).arg(path);
+    run(cmd).expect("ffmpeg makes an HDR test video");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -323,6 +464,63 @@ mod tests {
         let still = parse_still(&probe).unwrap();
         assert_eq!((still.width, still.height), (1920, 1080));
         assert!(still_filter(&still, 400).starts_with("[0:1]scale="));
+    }
+
+    #[test]
+    fn hdr_video_thumbnails_keep_their_colours() {
+        if !available() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        for hdr in [Hdr::Pq, Hdr::Hlg] {
+            let path = dir.path().join(format!("{hdr:?}.mp4"));
+            make_hdr_video(&path, hdr);
+            assert_eq!(hdr_of(&path), Some(hdr));
+            let px = decode_frame(&path, None, 64).unwrap().to_rgb8().get_pixel(10, 10).0;
+            // Without tone mapping this comes out as a washed-out (108, 73, 48).
+            let close = |a: u8, b: u8| a.abs_diff(b) <= 20;
+            assert!(close(px[0], 200) && close(px[1], 60) && close(px[2], 40), "{hdr:?}: {px:?}");
+        }
+        let sdr = dir.path().join("sdr.mp4");
+        make_test_video(&sdr, &[]);
+        assert_eq!(hdr_of(&sdr), None);
+    }
+
+    /// Checks that the layout read from HEIF boxes is exactly what FFmpeg reports, for every
+    /// HEIC/HEIF/AVIF in a folder (files are only read):
+    /// `PHOTOS_TEST_DIR=folder cargo test -p photos-core --release -- --ignored --nocapture heif_layout_matches_ffmpeg`
+    #[test]
+    #[ignore]
+    fn heif_layout_matches_ffmpeg() {
+        use rayon::prelude::*;
+        let dir = std::env::var("PHOTOS_TEST_DIR").expect("set PHOTOS_TEST_DIR");
+        let files: Vec<PathBuf> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| crate::media::file_type(p).is_some_and(|(_, f)| f == crate::media::Format::FfmpegStill))
+            .collect();
+        let results: Vec<(PathBuf, &str)> = files
+            .par_iter()
+            .map(|p| {
+                let ours = crate::heif::read(p).and_then(|i| Still::from_heif(&i));
+                let verdict = match (ours, probe_still(p)) {
+                    (None, _) => "not read from boxes (FFmpeg is asked)",
+                    (Some(_), Err(_)) => "FFmpeg cannot read it",
+                    (Some(a), Ok(b)) if a.same_layout(&b) => "same",
+                    (Some(_), Ok(_)) => "DIFFERENT",
+                };
+                (p.clone(), verdict)
+            })
+            .collect();
+        let mut counts = std::collections::BTreeMap::new();
+        for (p, verdict) in &results {
+            *counts.entry(*verdict).or_insert(0) += 1;
+            if *verdict != "same" {
+                println!("{verdict}: {}", p.display());
+            }
+        }
+        println!("{counts:?}");
+        assert!(!counts.contains_key("DIFFERENT"));
     }
 
     /// Decode a real HEIC: `PHOTOS_TEST_HEIC=path\to\photo.heic cargo test -- --ignored real_heic`

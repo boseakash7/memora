@@ -1,10 +1,19 @@
 <script lang="ts">
   import { untrack, type Snippet } from 'svelte'
+  import {
+    deleteForever,
+    itemMenu,
+    moveToTrash,
+    removeFromAlbum,
+    restoreFromTrash,
+    toggleFavorite,
+    type ActionContext,
+  } from '../lib/actions'
   import { api, errorMessage, type Album, type TimelineItem, type TimelineQuery } from '../lib/api'
-  import { confirmDialog, dialogs } from '../lib/dialogs.svelte'
+  import { openContextMenu } from '../lib/contextMenu.svelte'
+  import { dialogs } from '../lib/dialogs.svelte'
   import Icon from '../lib/Icon.svelte'
   import { isBusy, library } from '../lib/library.svelte'
-  import { toast } from '../lib/toast.svelte'
   import AlbumPicker from './AlbumPicker.svelte'
   import PhotoGrid from './PhotoGrid.svelte'
   import Viewer from './Viewer.svelte'
@@ -36,6 +45,8 @@
   let items = $state.raw<TimelineItem[] | null>(null)
   let error = $state('')
   let openId = $state<number | null>(null)
+  /** Open the viewer with its info panel (right-click → Info). */
+  let openInfo = $state(false)
   let grid = $state<ReturnType<typeof PhotoGrid>>()
   let selected = $state.raw<ReadonlySet<number>>(new Set())
   let lastToggled: number | null = null
@@ -105,6 +116,7 @@
   function close() {
     const index = openIndex
     openId = null
+    openInfo = false
     if (index >= 0) grid?.reveal(index)
   }
 
@@ -147,71 +159,46 @@
     lastToggled = null
   }
 
-  // ---------- actions on the selection ----------
+  // ---------- actions ----------
 
-  const count = (n: number) => (n === 1 ? '1 item' : `${n} items`)
-
-  async function attempt(action: () => Promise<void>) {
-    try {
-      await action()
-    } catch (e) {
-      toast(errorMessage(e), { error: true })
+  function context(targets: TimelineItem[], extra: Partial<ActionContext> = {}): ActionContext {
+    return {
+      items: targets,
+      scope: scope as ActionContext['scope'],
+      albumId,
+      addToAlbum: (ids) => (pickerIds = ids),
+      onremoved: clearSelection,
+      ...extra,
     }
   }
 
-  const toggleFavorite = () =>
-    attempt(async () => {
-      const ids = selectedItems.map((i) => i.id)
-      const favorite = !allFavorites
-      await api.items.favorite(ids, favorite)
-      toast(favorite ? `Added ${count(ids.length)} to favorites` : `Removed ${count(ids.length)} from favorites`)
-    })
+  const onSelection = (action: (c: ActionContext) => void) => () => {
+    if (selectedItems.length > 0) action(context(selectedItems))
+  }
 
-  const trashSelected = () =>
-    attempt(async () => {
-      const ids = selectedItems.map((i) => i.id)
-      if (ids.length === 0) return
-      await api.items.trash(ids)
-      clearSelection()
-      toast(`Moved ${count(ids.length)} to trash`, {
-        action: { label: 'Undo', run: () => attempt(() => api.items.restore(ids)) },
-      })
-    })
-
-  const restoreSelected = () =>
-    attempt(async () => {
-      const ids = selectedItems.map((i) => i.id)
-      await api.items.restore(ids)
-      clearSelection()
-      toast(`Restored ${count(ids.length)}`)
-    })
-
-  const removeFromAlbum = () =>
-    attempt(async () => {
-      const ids = selectedItems.map((i) => i.id)
-      const album = albumId!
-      await api.albums.removeItems(album, ids)
-      clearSelection()
-      toast(`Removed ${count(ids.length)} from the album`, {
-        action: { label: 'Undo', run: () => attempt(() => api.albums.addItems(album, ids)) },
-      })
-    })
-
-  const deleteForever = () =>
-    attempt(async () => {
-      const ids = selectedItems.map((i) => i.id)
-      const ok = await confirmDialog({
-        title: `Delete ${count(ids.length)}?`,
-        message: 'The files are moved to the Windows Recycle Bin and removed from the library.',
-        confirmLabel: 'Delete',
-        danger: true,
-      })
-      if (!ok) return
-      const result = await api.items.emptyTrash(ids)
-      clearSelection()
-      if (result.failed.length > 0) toast(`Could not delete ${result.failed[0]}`, { error: true })
-      else toast(`Moved ${count(result.deleted)} to the Recycle Bin`)
-    })
+  /** Right-click on a tile. Like Explorer: on a selected tile the menu is for the selection;
+   *  on another tile while some are selected, that tile becomes the selection. */
+  function onmenu(index: number, e: MouseEvent) {
+    if (!items) return
+    const item = items[index]
+    let targets = [item]
+    if (selected.has(item.id)) targets = selectedItems
+    else if (selected.size > 0) {
+      selected = new Set([item.id])
+      lastToggled = index
+    }
+    const { header, entries } = itemMenu(
+      context(targets, {
+        open: () => (openId = item.id),
+        info: () => {
+          openInfo = true
+          openId = item.id
+        },
+        select: selected.has(item.id) ? undefined : () => toggle(index, false),
+      }),
+    )
+    openContextMenu(e, entries, header)
+  }
 
   function pickerDone(added?: Album) {
     pickerIds = null
@@ -223,7 +210,7 @@
     const target = e.target as HTMLElement | null
     if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT')) return
     if (e.key === 'Escape' && selected.size > 0) clearSelection()
-    else if (e.key === 'Delete' && selected.size > 0 && scope !== 'trash') trashSelected()
+    else if (e.key === 'Delete' && selected.size > 0 && scope !== 'trash') onSelection(moveToTrash)()
     else if ((e.ctrlKey || e.metaKey) && e.key === 'a' && items && items.length > 0) selected = new Set(items.map((i) => i.id))
     else return
     e.preventDefault()
@@ -258,6 +245,7 @@
         onopen={(i) => (openId = items![i].id)}
         ontoggle={toggle}
         ontoggleday={toggleDay}
+        {onmenu}
       />
     {/if}
   </div>
@@ -268,19 +256,21 @@
       <span class="selection-count">{selected.size.toLocaleString()} selected</span>
       <span class="viewer-spacer"></span>
       {#if scope === 'trash'}
-        <button class="btn" onclick={restoreSelected}><Icon name="restore" size={20} /> Restore</button>
-        <button class="btn danger" onclick={deleteForever}><Icon name="deleteForever" size={20} /> Delete</button>
+        <button class="btn" onclick={onSelection(restoreFromTrash)}><Icon name="restore" size={20} /> Restore</button>
+        <button class="btn danger" onclick={onSelection(deleteForever)}>
+          <Icon name="deleteForever" size={20} /> Delete
+        </button>
       {:else}
-        <button class="icon-btn" title={allFavorites ? 'Remove from favorites' : 'Add to favorites'} onclick={toggleFavorite}>
+        <button class="icon-btn" title={allFavorites ? 'Remove from favorites' : 'Add to favorites'} onclick={onSelection(toggleFavorite)}>
           <Icon name={allFavorites ? 'star' : 'starOutline'} />
         </button>
         <button class="icon-btn" title="Add to album" onclick={() => (pickerIds = selectedItems.map((i) => i.id))}>
           <Icon name="libraryAdd" />
         </button>
         {#if albumId !== null}
-          <button class="icon-btn" title="Remove from this album" onclick={removeFromAlbum}><Icon name="remove" /></button>
+          <button class="icon-btn" title="Remove from this album" onclick={onSelection(removeFromAlbum)}><Icon name="remove" /></button>
         {/if}
-        <button class="icon-btn" title="Move to trash (Delete)" onclick={trashSelected}><Icon name="trash" /></button>
+        <button class="icon-btn" title="Move to trash (Delete)" onclick={onSelection(moveToTrash)}><Icon name="trash" /></button>
       {/if}
     </div>
   {/if}
@@ -291,6 +281,7 @@
       index={openIndex}
       {scope}
       {albumId}
+      info={openInfo}
       onnavigate={(i) => (openId = items![i].id)}
       onclose={close}
     />

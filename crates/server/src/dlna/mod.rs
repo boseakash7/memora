@@ -38,6 +38,50 @@ pub fn routes() -> Router<LanState> {
         .route("/dlna/m/{id}/{file}", get(media_file))
 }
 
+/// One line per request from a TV (outermost layer, so rejected requests show too), so a
+/// misbehaving TV can be diagnosed from the log. Media requests also log when they start,
+/// which shows requests the TV gave up on before we answered.
+pub(crate) async fn log_request(req: Request, next: axum::middleware::Next) -> Response {
+    let peer = client_ip(&req);
+    let (method, path) = (req.method().clone(), req.uri().path().to_owned());
+    if path.starts_with("/tv") || path.starts_with("/assets") {
+        return next.run(req).await;
+    }
+    let (agent, range, host) = {
+        let header = |name: &str| req.headers().get(name).and_then(|v| v.to_str().ok()).unwrap_or("-").to_owned();
+        (header("user-agent"), header("range"), header("host"))
+    };
+    if path.starts_with("/dlna/m/") {
+        append_request_log(&format!("  start {peer} {method} {path} host={host}"));
+    }
+    let began = std::time::Instant::now();
+    let res = next.run(req).await;
+    let line = format!(
+        "DLNA {peer} {method} {path} -> {} {}ms range={range} agent={agent}",
+        res.status().as_u16(),
+        began.elapsed().as_millis()
+    );
+    tracing::info!("{line}");
+    append_request_log(&line);
+    res
+}
+
+/// The same line in `<data dir>/dlna-requests.log` (restarted with the app), so it can be
+/// sent along when a TV misbehaves.
+fn append_request_log(line: &str) {
+    use std::io::Write;
+    use std::sync::{Mutex, OnceLock};
+    static FILE: OnceLock<Option<Mutex<std::fs::File>>> = OnceLock::new();
+    let file = FILE.get_or_init(|| {
+        let dir = photos_core::paths::AppPaths::from_env().ok()?.data_dir;
+        std::fs::File::create(dir.join("dlna-requests.log")).ok().map(Mutex::new)
+    });
+    if let Some(Ok(mut f)) = file.as_ref().map(|f| f.lock()) {
+        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let _ = writeln!(f, "{} {line}", secs % 86400);
+    }
+}
+
 fn xml(body: String) -> Response {
     ([(header::CONTENT_TYPE, "text/xml; charset=\"utf-8\"")], body).into_response()
 }
@@ -183,6 +227,14 @@ async fn browse(s: &LanState, call: &soap::Call, urls: didl::Urls) -> Response {
     match result {
         Ok(Some((nodes, total))) => {
             let returned = nodes.len().to_string();
+            let thumbs = nodes.iter().filter(|n| matches!(n, didl::Node::Item { .. })).count();
+            append_request_log(&format!(
+                "  BROWSE id={} {} start={start} count={} filter={:?} -> {returned} of {total} ({thumbs} items)",
+                call.arg("ObjectID"),
+                call.arg("BrowseFlag"),
+                call.arg("RequestedCount"),
+                call.arg("Filter"),
+            ));
             let body = soap::response(
                 CDS,
                 "Browse",
@@ -215,7 +267,7 @@ async fn media_file(State(s): State<LanState>, Path((id, file)): Path<(i64, Stri
 async fn send_media(s: &LanState, id: i64, file: &str, req: Request) -> Result<Response, ApiError> {
     let (file, features, mode) = match file {
         "photo.jpg" => (File::Photo, None, "Interactive"),
-        "tn.jpg" => (File::Small, Some(didl::THUMB_FEATURES), "Interactive"),
+        f if f == "tn.jpg" || (f.starts_with("tn-") && f.ends_with(".jpg")) => (File::Small, Some(didl::THUMB_FEATURES), "Interactive"),
         "stream.ts" => (File::Converted(Container::Ts), Some(didl::VIDEO_CONVERTED), "Streaming"),
         f if f.starts_with("original.") => (File::Original, Some(didl::VIDEO_ORIGINAL), "Streaming"),
         _ => return Err(photos_core::Error::NotFound.into()),

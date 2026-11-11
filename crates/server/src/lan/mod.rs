@@ -108,7 +108,7 @@ impl Lan {
         let lib = app.library.clone();
         let wanted = blocking(move || {
             let s = settings::load(lib.db())?;
-            let uuid = settings::persistent_secret(lib.db(), "dlnaUuid")?;
+            let uuid = settings::persistent_secret(lib.db(), "dlnaUuid2")?; // renamed once: a new identity makes TVs drop cached thumbnails
             let secret = settings::persistent_secret(lib.db(), "lanSecret")?;
             Ok((s, uuid, secret))
         })
@@ -255,6 +255,7 @@ fn router(state: LanState, cfg: &LanConfig, stop: CancellationToken) -> Router {
     }
     r.layer(middleware::from_fn_with_state(stop, end_on_stop))
         .layer(middleware::from_fn(check_host))
+        .layer(middleware::from_fn(dlna::log_request))
         .with_state(state)
 }
 

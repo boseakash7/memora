@@ -2,7 +2,7 @@
 //!
 //! Object ids:
 //! - `0` root; `t` Timeline, `t:2024` a year, `t:2024-03` a month
-//! - `a` Albums, `a:12` an album; `p` Places, `p:IN` a country, `pl:45` a place
+//! - `a` Albums, `a:12` an album; `h` People, `h:7` a person; `p` Places, `p:IN` a country, `pl:45` a place
 //! - `f` Favorites, `v` Videos; `d` Folders, `d:3` a watched folder, `d:3:Trip/Day 2` inside it
 //! - items: `<parent id>|<media id>` (Windows file names can't contain `|`)
 
@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use photos_core::db::Db;
 use photos_core::media::{self, Kind, Media, Query, Scope};
-use photos_core::{Error, Result, albums, browse, folders, places, thumbs, transcode};
+use photos_core::{Error, Result, albums, browse, folders, people, places, thumbs, transcode};
 
 use super::countries;
 use super::soap::escape;
@@ -47,6 +47,8 @@ enum Obj {
     Month(String),
     Albums,
     Album(i64),
+    People,
+    Person(i64),
     Places,
     Country(String),
     Place(i64),
@@ -71,6 +73,8 @@ impl Obj {
             ("t", m) if m.len() == 7 => Obj::Month(m.to_owned()),
             ("a", "") => Obj::Albums,
             ("a", n) => Obj::Album(digits(n)?),
+            ("h", "") => Obj::People,
+            ("h", n) => Obj::Person(digits(n)?),
             ("p", "") => Obj::Places,
             ("p", cc) => Obj::Country(cc.to_owned()),
             ("pl", n) => Obj::Place(digits(n)?),
@@ -92,6 +96,8 @@ impl Obj {
             Obj::Year(y) | Obj::Month(y) => format!("t:{y}"),
             Obj::Albums => "a".into(),
             Obj::Album(n) => format!("a:{n}"),
+            Obj::People => "h".into(),
+            Obj::Person(n) => format!("h:{n}"),
             Obj::Places => "p".into(),
             Obj::Country(cc) => format!("p:{cc}"),
             Obj::Place(n) => format!("pl:{n}"),
@@ -161,6 +167,23 @@ fn favorites_query() -> Query {
     Query { scope: Scope::Favorites, ..Default::default() }
 }
 
+/// People shown on TVs: named and not hidden (unnamed groups are often strangers), with
+/// the photo their face picture comes from.
+fn named_people(db: &Db) -> Result<Vec<(people::Person, Option<i64>)>> {
+    people::list(db, false)?
+        .into_iter()
+        .filter(|p| p.name.is_some())
+        .map(|p| {
+            let cover = p.cover_face.map(|f| people::media_of_face(db, f).map(|(m, _)| m)).transpose()?;
+            Ok((p, cover))
+        })
+        .collect()
+}
+
+fn person_container(p: &people::Person, cover: Option<i64>) -> Container {
+    container(&Obj::Person(p.id), "h", p.name.clone().unwrap_or_default(), p.count as u64, cover)
+}
+
 /// Places grouped by country code: (code, places).
 fn countries(db: &Db) -> Result<BTreeMap<String, Vec<places::Place>>> {
     let mut map: BTreeMap<String, Vec<places::Place>> = BTreeMap::new();
@@ -183,7 +206,7 @@ fn folder_title(db: &Db, id: i64, rel: &str) -> Result<String> {
 /// The container `obj` describes (title, parent, size), for BrowseMetadata and listings.
 fn describe(db: &Db, obj: &Obj, root_title: &str) -> Result<Container> {
     Ok(match obj {
-        Obj::Root => container(obj, "-1", root_title, 6, None),
+        Obj::Root => container(obj, "-1", root_title, 7, None),
         Obj::Timeline => container(obj, "0", "Timeline", browse::years(db)?.len() as u64, None),
         Obj::Year(y) => {
             let year = browse::years(db)?.into_iter().find(|p| &p.key == y).ok_or(Error::NotFound)?;
@@ -197,6 +220,11 @@ fn describe(db: &Db, obj: &Obj, root_title: &str) -> Result<Container> {
         Obj::Album(n) => {
             let a = albums::get(db, *n)?;
             container(obj, "a", a.name, a.count as u64, a.cover_id)
+        }
+        Obj::People => container(obj, "0", "People", named_people(db)?.len() as u64, None),
+        Obj::Person(n) => {
+            let (p, cover) = named_people(db)?.into_iter().find(|(p, _)| p.id == *n).ok_or(Error::NotFound)?;
+            person_container(&p, cover)
         }
         Obj::Places => container(obj, "0", "Places", countries(db)?.len() as u64, None),
         Obj::Country(cc) => {
@@ -271,7 +299,7 @@ pub fn children(db: &Db, id: &str, start: u64, count: u64, root_title: &str) -> 
     };
     Ok(match &obj {
         Obj::Root => {
-            let tops = [Obj::Timeline, Obj::Albums, Obj::Places, Obj::Favorites, Obj::Videos, Obj::Folders];
+            let tops = [Obj::Timeline, Obj::Albums, Obj::People, Obj::Places, Obj::Favorites, Obj::Videos, Obj::Folders];
             containers(tops.iter().map(|o| describe(db, o, root_title)).collect::<Result<_>>()?)
         }
         Obj::Timeline => containers(
@@ -300,6 +328,12 @@ pub fn children(db: &Db, id: &str, start: u64, count: u64, root_title: &str) -> 
         Obj::Album(n) => {
             albums::get(db, *n)?;
             items(db, &obj, &Query { scope: Scope::Album, album: Some(*n), ..Default::default() }, start, count)?
+        }
+        Obj::People => containers(named_people(db)?.iter().map(|(p, cover)| person_container(p, *cover)).collect()),
+        Obj::Person(n) => {
+            // Hidden and unnamed people are not on the TV.
+            named_people(db)?.into_iter().find(|(p, _)| p.id == *n).ok_or(Error::NotFound)?;
+            items(db, &obj, &Query { person: Some(*n), ..Default::default() }, start, count)?
         }
         Obj::Places => containers(
             countries(db)?
@@ -399,10 +433,16 @@ pub fn didl(nodes: &[Node], urls: &Urls) -> String {
     xml
 }
 
+/// Thumbnail URL. The file name is unique per item because some Samsung TVs cache
+/// thumbnails by file name alone, which made every item show the same picture.
+fn tn_url(urls: &Urls, id: i64) -> String {
+    urls.file(id, &format!("tn-{id}.jpg"))
+}
+
 fn album_art(xml: &mut String, id: i64, urls: &Urls) {
     xml.push_str(&format!(
         r#"<upnp:albumArtURI dlna:profileID="JPEG_TN">{}</upnp:albumArtURI>"#,
-        escape(&urls.file(id, "tn.jpg"))
+        escape(&tn_url(urls, id))
     ));
 }
 
@@ -436,6 +476,10 @@ fn write_item(xml: &mut String, parent: &str, m: &Media, urls: &Urls) {
     let res = |info: &str, attrs: &str, url: &str| {
         format!(r#"<res protocolInfo="http-get:*:{info}"{attrs}>{}</res>"#, escape(url))
     };
+    // Thumbnail `res` with its pixel size, as servers that Samsung TVs show video pictures
+    // for send it.
+    let small = thumbs::small_size(m).map(|(w, h)| format!(r#" resolution="{w}x{h}""#)).unwrap_or_default();
+    let thumb_res = res(&format!("image/jpeg:{THUMB_FEATURES}"), &small, &tn_url(urls, m.id));
     if m.kind == Kind::Video {
         let duration = m.duration_ms.map(|d| format!(r#" duration="{}""#, npt(d))).unwrap_or_default();
         let resolution = match (m.width, m.height) {
@@ -453,22 +497,28 @@ fn write_item(xml: &mut String, parent: &str, m: &Media, urls: &Urls) {
         });
         // TVs play the first entry they support, so put the converted stream first when
         // the original probably won't play.
+        // The thumbnail comes right after the first video `res`, before any second video.
         match converted {
             Some(c) if !transcode::tv_plays_original(m) => {
                 xml.push_str(&c);
+                xml.push_str(&thumb_res);
                 xml.push_str(&original);
             }
             Some(c) => {
                 xml.push_str(&original);
+                xml.push_str(&thumb_res);
                 xml.push_str(&c);
             }
-            None => xml.push_str(&original),
+            None => {
+                xml.push_str(&original);
+                xml.push_str(&thumb_res);
+            }
         }
     } else {
         let resolution = thumbs::tv_size(m).map(|(w, h)| format!(r#" resolution="{w}x{h}""#)).unwrap_or_default();
         xml.push_str(&res(&format!("image/jpeg:{}", photo_features(m)), &resolution, &urls.file(m.id, "photo.jpg")));
+        xml.push_str(&thumb_res);
     }
-    xml.push_str(&res(&format!("image/jpeg:{THUMB_FEATURES}"), "", &urls.file(m.id, "tn.jpg")));
     xml.push_str("</item>");
 }
 
@@ -478,7 +528,7 @@ mod tests {
 
     #[test]
     fn object_ids_round_trip() {
-        for id in ["0", "t", "t:2024", "t:2024-03", "a", "a:12", "p", "p:IN", "pl:45", "f", "v", "d", "d:3", "d:3:Trip/Day 2", "t:2024-03|77", "d:3:A|B|5"] {
+        for id in ["0", "t", "t:2024", "t:2024-03", "a", "a:12", "h", "h:7", "p", "p:IN", "pl:45", "f", "v", "d", "d:3", "d:3:Trip/Day 2", "t:2024-03|77", "d:3:A|B|5"] {
             let obj = Obj::parse(id).unwrap_or_else(|| panic!("{id} parses"));
             assert_eq!(obj.id(), id);
         }

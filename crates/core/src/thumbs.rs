@@ -1,19 +1,18 @@
-//! Thumbnails for the grid and browser-friendly copies of HEIC/TIFF photos.
+//! Thumbnails for the grid and browser-friendly copies of HEIC, RAW and TIFF photos.
 //!
 //! Cache layout: `cache/<kind>/<id / 1000>/<id>.jpg`, where kind is `thumb` (grid), `display`
 //! (HEIC/TIFF for the viewer), `tv` (photos for TVs) or `tn` (tiny DLNA thumbnails).
 //! Files are keyed by media id, so renames and moves keep their thumbnails.
 
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Write};
+use std::io::{BufReader, BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use image::codecs::jpeg::JpegEncoder;
 use image::metadata::Orientation;
 use image::{DynamicImage, GrayImage, RgbImage};
 
 use crate::AppPaths;
-use crate::ffmpeg;
+use crate::{ffmpeg, raw};
 use crate::media::{Format, Media, needs_display_copy};
 use crate::{Error, Result};
 
@@ -21,7 +20,7 @@ use crate::{Error, Result};
 pub const THUMB_HEIGHT: u32 = 400;
 /// ...but no wider than this, for panoramas.
 pub const THUMB_MAX_WIDTH: u32 = 1600;
-/// Longest side of converted HEIC/TIFF photos shown in the viewer.
+/// Longest side of converted HEIC/RAW/TIFF photos shown in the viewer.
 pub const DISPLAY_MAX: u32 = 2560;
 /// Photos for TVs fit in 4K UHD. TVs refuse HEIC and very large JPEGs, and many ignore
 /// EXIF rotation, so they get an upright JPEG of at most this size.
@@ -77,8 +76,8 @@ pub fn ensure_display(paths: &AppPaths, media: &Media) -> Result<PathBuf> {
     let path = display_path(paths, media.id);
     if !is_fresh(&path, media) {
         let img = match media.format() {
-            Format::FfmpegStill => {
-                return prepare_ffmpeg_still(paths, media).map(|_| path);
+            Format::FfmpegStill | Format::Raw => {
+                return prepare_still(paths, media).map(|_| path);
             }
             _ => decode_raster(&media.path, media.orientation)?,
         };
@@ -89,12 +88,12 @@ pub fn ensure_display(paths: &AppPaths, media: &Media) -> Result<PathBuf> {
 }
 
 /// A photo as a TV wants it: an upright JPEG no bigger than 4K. Small, unrotated JPEGs are
-/// served as they are; HEIC/AVIF use their display copy (already upright, at most 2560 px).
+/// served as they are; HEIC/AVIF/RAW use their display copy (already upright, at most 2560 px).
 pub fn ensure_tv(paths: &AppPaths, media: &Media) -> Result<PathBuf> {
     let (w, h) = (media.width.unwrap_or(0), media.height.unwrap_or(0));
     match media.format() {
         Format::Video => return Err(Error::media("videos have no TV photo")),
-        Format::FfmpegStill => return ensure_display(paths, media),
+        Format::FfmpegStill | Format::Raw => return ensure_display(paths, media),
         Format::Jpeg if media.orientation <= 1 && w > 0 && w <= TV_MAX_W && h > 0 && h <= TV_MAX_H => {
             return Ok(media.path.clone());
         }
@@ -116,8 +115,16 @@ pub fn ensure_tv(paths: &AppPaths, media: &Media) -> Result<PathBuf> {
 /// Pixel size of [`ensure_tv`]'s picture, from the stored (displayed) size.
 pub fn tv_size(media: &Media) -> Option<(u32, u32)> {
     let (w, h) = (media.width?, media.height?);
-    let (mw, mh) = if media.format() == Format::FfmpegStill { (DISPLAY_MAX, DISPLAY_MAX) } else { (TV_MAX_W, TV_MAX_H) };
+    let (mw, mh) = match media.format() {
+        Format::FfmpegStill | Format::Raw => (DISPLAY_MAX, DISPLAY_MAX),
+        _ => (TV_MAX_W, TV_MAX_H),
+    };
     Some(fit_within(w, h, mw, mh))
+}
+
+/// Pixel size of [`ensure_small`]'s picture, from the stored (displayed) size.
+pub fn small_size(media: &Media) -> Option<(u32, u32)> {
+    Some(fit_within(media.width?, media.height?, SMALL_MAX, SMALL_MAX))
 }
 
 /// A thumbnail that fits in 160x160 (DLNA `JPEG_TN`), made from the grid thumbnail.
@@ -132,12 +139,81 @@ pub fn ensure_small(paths: &AppPaths, media: &Media) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// Decode a HEIC/AVIF once with FFmpeg (stitching tiled photos), rotate it, and keep the
-/// result as the display copy. Thumbnails are made from that copy.
-pub fn prepare_ffmpeg_still(paths: &AppPaths, media: &Media) -> Result<()> {
-    let still = ffmpeg::probe_still(&media.path)?;
-    let img = ffmpeg::decode_still(&media.path, &still, DISPLAY_MAX)?;
-    write_jpeg(&orient(img, media.orientation), &display_path(paths, media.id))
+/// Longest side of the picture face and scene recognition look at.
+pub const ANALYSIS_MAX: u32 = 1600;
+
+/// The item as shown (upright), at most [`ANALYSIS_MAX`] on its longest side, for recognition.
+/// Videos use a frame a little way in, like their thumbnail.
+pub fn analysis_image(paths: &AppPaths, media: &Media) -> Result<RgbImage> {
+    let fit = |w, h| fit_within(w, h, ANALYSIS_MAX, ANALYSIS_MAX);
+    let img = match media.format() {
+        Format::Jpeg => decode_jpeg_scaled(&media.path, media.orientation, fit)?,
+        Format::Raster => decode_raster(&media.path, media.orientation)?,
+        Format::FfmpegStill | Format::Raw => decode_jpeg_scaled(&still_copy(paths, media)?, 1, fit)?,
+        Format::Video => {
+            let seek = media.duration_ms.filter(|d| *d > 3000).map(|_| 1.0);
+            ffmpeg::decode_frame(&media.path, seek, ANALYSIS_MAX)?
+        }
+    };
+    let (w, h) = fit(img.width(), img.height());
+    let img = if (w, h) == (img.width(), img.height()) { img } else { img.thumbnail_exact(w, h) };
+    Ok(flatten(&img))
+}
+
+/// Side of the square face pictures on the People pages.
+pub const FACE_SIZE: u32 = 256;
+
+pub fn face_path(paths: &AppPaths, face_id: i64) -> PathBuf {
+    cache_file(paths, "face", face_id)
+}
+
+/// Save the square picture of a face: the face box (fractions of `img`) with some room around it.
+pub fn write_face(paths: &AppPaths, face_id: i64, img: &RgbImage, rect: [f32; 4]) -> Result<()> {
+    let (iw, ih) = (img.width() as f32, img.height() as f32);
+    let [x, y, w, h] = [rect[0] * iw, rect[1] * ih, rect[2] * iw, rect[3] * ih];
+    // A square around the face centre, 1.6x the face, kept inside the picture where possible.
+    let side = (w.max(h) * 1.6).min(iw.min(ih)).max(1.0);
+    let cx = (x + w / 2.0 - side / 2.0).clamp(0.0, (iw - side).max(0.0));
+    let cy = (y + h / 2.0 - side / 2.0).clamp(0.0, (ih - side).max(0.0));
+    let crop = image::imageops::crop_imm(img, cx as u32, cy as u32, side as u32, side as u32).to_image();
+    let out = DynamicImage::from(crop).resize_exact(FACE_SIZE, FACE_SIZE, image::imageops::FilterType::CatmullRom);
+    write_jpeg(&out, &face_path(paths, face_id))
+}
+
+/// Decode a HEIC/AVIF (with FFmpeg, stitching tiled photos) or a RAW file once, rotate it,
+/// and keep the result as the display copy. Thumbnails and recognition use that copy.
+pub fn prepare_still(paths: &AppPaths, media: &Media) -> Result<()> {
+    let fit = |w, h| fit_within(w, h, DISPLAY_MAX, DISPLAY_MAX);
+    let img = match media.format() {
+        Format::Raw => {
+            let raw = raw::probe(&media.path)?;
+            match &raw.source {
+                raw::Source::Jpeg(offset) => decode_jpeg_scaled_at(&media.path, *offset, media.orientation, fit)?,
+                raw::Source::Cfa(cfa) => orient(raw::develop(&media.path, cfa)?.into(), media.orientation),
+            }
+        }
+        _ => {
+            // The layout from the file's boxes when it is certain: one FFmpeg run instead of two.
+            let from_boxes = crate::heif::read(&media.path).and_then(|i| ffmpeg::Still::from_heif(&i));
+            let still = match from_boxes {
+                Some(still) => still,
+                None => ffmpeg::probe_still(&media.path)?,
+            };
+            orient(ffmpeg::decode_still(&media.path, &still, DISPLAY_MAX)?, media.orientation)
+        }
+    };
+    let (w, h) = fit(img.width(), img.height());
+    let img = if (w, h) == (img.width(), img.height()) { img } else { img.thumbnail_exact(w, h) };
+    write_jpeg(&img, &display_path(paths, media.id))
+}
+
+/// The up-to-date display copy of a HEIC/AVIF/RAW photo, made if needed.
+fn still_copy(paths: &AppPaths, media: &Media) -> Result<PathBuf> {
+    let display = display_path(paths, media.id);
+    if !is_fresh(&display, media) {
+        prepare_still(paths, media)?;
+    }
+    Ok(display)
 }
 
 /// Generate the grid thumbnail.
@@ -145,13 +221,7 @@ pub fn make_thumb(paths: &AppPaths, media: &Media) -> Result<()> {
     let img = match media.format() {
         Format::Jpeg => decode_jpeg_scaled(&media.path, media.orientation, thumb_size)?,
         Format::Raster => decode_raster(&media.path, media.orientation)?,
-        Format::FfmpegStill => {
-            let display = display_path(paths, media.id);
-            if !is_fresh(&display, media) {
-                prepare_ffmpeg_still(paths, media)?;
-            }
-            decode_jpeg_scaled(&display, 1, thumb_size)?
-        }
+        Format::FfmpegStill | Format::Raw => decode_jpeg_scaled(&still_copy(paths, media)?, 1, thumb_size)?,
         Format::Video => {
             // A frame a little way in avoids black fade-ins.
             let seek = media.duration_ms.filter(|d| *d > 3000).map(|_| 1.0);
@@ -195,7 +265,22 @@ fn decode_raster(path: &Path, orientation: u8) -> Result<DynamicImage> {
 /// large photos several times faster than a full decode. `size` maps the displayed size to
 /// the wanted size; the result is at least that big (callers resize the rest of the way).
 fn decode_jpeg_scaled(path: &Path, orientation: u8, size: impl Fn(u32, u32) -> (u32, u32)) -> Result<DynamicImage> {
-    let mut decoder = jpeg_decoder::Decoder::new(BufReader::new(File::open(path)?));
+    decode_jpeg_scaled_at(path, 0, orientation, size)
+}
+
+/// [`decode_jpeg_scaled`] for a JPEG that starts `offset` bytes into the file (RAW previews).
+fn decode_jpeg_scaled_at(
+    path: &Path,
+    offset: u64,
+    orientation: u8,
+    size: impl Fn(u32, u32) -> (u32, u32),
+) -> Result<DynamicImage> {
+    let open = || -> Result<BufReader<File>> {
+        let mut r = BufReader::new(File::open(path)?);
+        r.seek(SeekFrom::Start(offset))?;
+        Ok(r)
+    };
+    let mut decoder = jpeg_decoder::Decoder::new(open()?);
     let scaled = (|| {
         decoder.read_info().ok()?;
         let info = decoder.info()?;
@@ -216,7 +301,8 @@ fn decode_jpeg_scaled(path: &Path, orientation: u8, size: impl Fn(u32, u32) -> (
     })();
     match scaled {
         Some(img) => Ok(orient(img, orientation)),
-        None => decode_raster(path, orientation),
+        None if offset == 0 => decode_raster(path, orientation),
+        None => Ok(orient(image::ImageReader::with_format(open()?, image::ImageFormat::Jpeg).decode()?, orientation)),
     }
 }
 
@@ -231,7 +317,13 @@ fn write_jpeg(img: &DynamicImage, dest: &Path) -> Result<()> {
     let tmp = dest.with_extension(format!("{}-{n}.tmp", std::process::id()));
     let result = (|| {
         let mut out = BufWriter::new(File::create(&tmp)?);
-        JpegEncoder::new_with_quality(&mut out, JPEG_QUALITY).encode_image(&rgb)?;
+        // `jpeg-encoder` uses SIMD and is several times faster than the `image` crate's
+        // encoder (~20 ms instead of ~110 ms for a 2560 px display copy).
+        let (w, h) = (u16::try_from(rgb.width()), u16::try_from(rgb.height()));
+        let (Ok(w), Ok(h)) = (w, h) else { return Err(Error::media("picture too large for JPEG")) };
+        jpeg_encoder::Encoder::new(&mut out, JPEG_QUALITY)
+            .encode(rgb.as_raw(), w, h, jpeg_encoder::ColorType::Rgb)
+            .map_err(|e| Error::media(format!("cannot write JPEG: {e}")))?;
         out.flush()?;
         drop(out);
         std::fs::rename(&tmp, dest)?;
@@ -285,5 +377,53 @@ mod tests {
     fn flatten_puts_transparency_on_white() {
         let img = DynamicImage::from(image::RgbaImage::from_pixel(1, 1, image::Rgba([0, 0, 0, 0])));
         assert_eq!(flatten(&img).get_pixel(0, 0).0, [255, 255, 255]);
+    }
+
+    /// Thumbnails of real files for checking by eye (rotation, colours), with timings:
+    /// `PHOTOS_TEST_DIR=in PHOTOS_TEST_OUT=out cargo test -p photos-core --release -- --ignored --nocapture real_files`
+    #[test]
+    #[ignore]
+    fn real_files() {
+        let dir = std::env::var("PHOTOS_TEST_DIR").expect("set PHOTOS_TEST_DIR");
+        let out = PathBuf::from(std::env::var("PHOTOS_TEST_OUT").expect("set PHOTOS_TEST_OUT"));
+        std::fs::create_dir_all(&out).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::in_dir(tmp.path()).unwrap();
+        let mut entries: Vec<_> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()).collect();
+        entries.sort();
+        for (i, path) in entries.into_iter().enumerate() {
+            let Some((mime, format)) = crate::media::file_type(&path) else { continue };
+            let started = std::time::Instant::now();
+            let meta = match crate::metadata::read(&path, format) {
+                Ok(m) => m,
+                Err(e) => {
+                    println!("{}: metadata failed: {e}", path.display());
+                    continue;
+                }
+            };
+            let t_meta = started.elapsed();
+            let mut m = Media::for_test(&path, mime);
+            m.id = i as i64 + 1;
+            m.orientation = meta.orientation;
+            (m.width, m.height, m.duration_ms) = (meta.width, meta.height, meta.duration_ms);
+            let result = make_thumb(&paths, &m);
+            println!(
+                "{}: {:?}x{:?} orientation {} taken {:?} {:?} camera {:?} | meta {:.0?} thumb {:.0?} {}",
+                path.file_name().unwrap().to_string_lossy(),
+                meta.width,
+                meta.height,
+                meta.orientation,
+                meta.taken_at,
+                meta.tz_offset,
+                meta.camera_model,
+                t_meta,
+                started.elapsed() - t_meta,
+                result.as_ref().err().map(|e| e.to_string()).unwrap_or_default(),
+            );
+            if result.is_ok() {
+                let name = format!("{}.jpg", path.file_name().unwrap().to_string_lossy());
+                std::fs::copy(thumb_path(&paths, m.id), out.join(name)).unwrap();
+            }
+        }
     }
 }

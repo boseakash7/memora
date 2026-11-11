@@ -8,3 +8,5 @@ src-tauri/gen/schemas
 *.log
 branding/preview.html
 branding/preview.png
+# Junction to the installer staging folder (scripts/build-installer.ps1)
+src-tauri/installer-files

@@ -14,26 +14,32 @@ priorities change as people try the app. Have an idea? [Open an issue](../../iss
 - [x] TV streaming: DLNA/UPnP media server and a TV-friendly web page on your home network (optional PIN for the web page)
 - [x] Light and dark theme
 
-## Next (v0.2): polish and reach
-- [ ] Signed installer
-- [ ] Bundled FFmpeg so there is nothing else to install
-- [ ] Windows Firewall rule created by the installer for TV sharing
-- [ ] RAW support (CR2, NEF, ARW, DNG, ...)
-- [ ] Verified iPhone HEIC rotation; HDR tone mapping for converted videos
-- [ ] Timezone-correct dates for videos
-- [ ] Faster first-time indexing for very large libraries
+## Next (v0.2): polish, reach and smart search
+- [ ] Signed installer (the build signs the app and installer once a code-signing certificate is set up; the certificate itself is still to get)
+- [x] Bundled FFmpeg and recognition models, so there is nothing else to install
+- [x] Windows Firewall rule created by the installer for TV sharing (private networks only)
+- [x] RAW support (CR2, CR3, NEF, ARW, DNG, RAF, ORF, RW2, PEF, ...)
+- [x] Verified iPhone HEIC rotation; HDR tone mapping for converted videos and their thumbnails
+- [x] Timezone-correct dates for videos
+- [x] Faster first-time indexing for very large libraries
+- [x] People: on-device face detection and grouping, rename/merge/hide
+- [x] Natural-language search ("dog on a beach") using an on-device CLIP model
 
-## Soon (v0.3): smart, still offline
-- [ ] People: on-device face detection and grouping, rename/merge/hide
-- [ ] Natural-language search ("dog on a beach") using an on-device CLIP model
-- [ ] Memories: "on this day" and auto-generated highlight collections
-- [ ] Bulk edit: fix dates, locations and captions
+## Soon (v0.3): organize and carry your library
+- [x] Custom title bar: Memora's own top bar with window buttons instead of the Windows title bar (snap, resize and the Windows window menu keep working)
+- [x] Right-click menus for photos and videos (favorite, album, archive, copy image or path, show in Explorer, open with, set as desktop background, trash), also for a selection, in the viewer and in Trash
+- [ ] Archive: hide photos from everywhere except the Archive page; an Archive row on the TV page and an Archive folder for DLNA (can be switched off)
+- [ ] Your library goes with your photos: a hidden `.memora` folder in each watched folder keeps favorites, albums, archive, trash and people names, so another PC that adds the same folder (external drive, NAS or a synced folder) shows the same library and stays in sync. It also stores the finished index, so the second PC skips the slow indexing and recognition
+- [ ] Move Memora's data and cache to another drive; "Locate folder" when a drive letter changes
+- [ ] Back up and restore library info as one file
 
 ## Later (v0.4+)
 - [ ] Private vault ("Locked folder"): encrypted on disk, password + recovery key, never shown on the LAN or TV
+- [ ] Memories: "on this day" and auto-generated highlight collections
+- [ ] Bulk edit: fix dates, locations and captions
 - [ ] Basic editing (crop, rotate, adjust), saved non-destructively
 - [ ] Windows Hello unlock for the vault
-- [ ] Back up / sync to an external drive or NAS
+- [ ] Back up the photos themselves to an external drive or NAS
 - [ ] Localization
 
 ## Ideas, not committed
@@ -42,5 +48,5 @@ priorities change as people try the app. Have an idea? [Open an issue](../../iss
 
 ## Principles
 1. **Offline first.** No accounts, no cloud, no telemetry. Nothing leaves your PC unless you turn on TV sharing for your own network.
-2. **Your files stay yours.** Memora indexes in place and never moves or edits originals (the future vault is the one explicit, opt-in exception).
+2. **Your files stay yours.** Memora indexes in place and never moves or edits originals (the future vault is the one explicit, opt-in exception). The only thing it writes next to your photos is the hidden `.memora` folder with your library info, and it asks first.
 3. **Fast on huge libraries.** Thumbnails are cached; indexing resumes after a restart.

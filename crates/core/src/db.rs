@@ -170,6 +170,38 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE media ADD COLUMN video_codec TEXT;
     ALTER TABLE media ADD COLUMN audio_codec TEXT;
     "#,
+    // 7: people (faces grouped into persons) and CLIP vectors for searching by content.
+    // Filled by the recognition worker, which takes items at stage 3 (hashed) to stage 4.
+    r#"
+    CREATE TABLE persons (
+        id             INTEGER PRIMARY KEY,
+        name           TEXT,                      -- NULL until the user names them
+        cover_face_id  INTEGER REFERENCES faces(id) ON DELETE SET NULL,
+        hidden         INTEGER NOT NULL DEFAULT 0,
+        created_at     TEXT NOT NULL
+    );
+    CREATE TABLE faces (
+        id         INTEGER PRIMARY KEY,
+        media_id   INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+        x REAL NOT NULL, y REAL NOT NULL, w REAL NOT NULL, h REAL NOT NULL, -- fractions of the displayed picture
+        score      REAL NOT NULL,                 -- detector confidence, 0-1
+        embedding  BLOB NOT NULL,                 -- 128 x f32 little-endian, unit length
+        person_id  INTEGER REFERENCES persons(id) ON DELETE SET NULL,
+        locked     INTEGER NOT NULL DEFAULT 0     -- 0 automatic, 1 person set by the user, 2 "not this person"
+    );
+    CREATE INDEX faces_media ON faces(media_id);
+    CREATE INDEX faces_person ON faces(person_id) WHERE person_id IS NOT NULL;
+    CREATE TABLE clip_embeddings (
+        media_id  INTEGER PRIMARY KEY REFERENCES media(id) ON DELETE CASCADE,
+        vec       BLOB NOT NULL                   -- 512 x f32 little-endian, unit length
+    );
+    "#,
+    // 8: video dates are now read in the time zone where they were taken, and cameras that
+    // write local time are recognised. This flag makes the library re-read them once
+    // (see `Library::refresh_video_dates`); the rest of the pipeline is not repeated.
+    r#"
+    INSERT OR REPLACE INTO settings(key, value) VALUES ('_refreshVideoDates', '1');
+    "#,
 ];
 
 pub type Conn = PooledConnection<SqliteConnectionManager>;
