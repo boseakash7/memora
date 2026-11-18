@@ -4,6 +4,7 @@ export const ROUTES = [
   'photos',
   'explore',
   'favorites',
+  'archive',
   'albums',
   'album',
   'people',

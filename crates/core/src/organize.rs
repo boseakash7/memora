@@ -1,4 +1,4 @@
-//! Favorites and the trash.
+//! Favorites, the Archive and the trash.
 //!
 //! "Trash" here is a soft delete: the file stays where it is and the item is hidden.
 //! Only emptying the trash touches files, and then they go to the Windows Recycle Bin,
@@ -10,9 +10,10 @@ use std::path::{Path, PathBuf};
 use chrono::{Duration, Utc};
 use r2d2_sqlite::rusqlite::params;
 use serde::Serialize;
+use serde_json::{Value, json};
 
 use crate::db::Db;
-use crate::{AppPaths, Result, thumbs};
+use crate::{AppPaths, Result, sync, thumbs};
 
 /// Days an item stays in the trash before it is removed for good.
 pub const TRASH_DAYS: i64 = 30;
@@ -23,31 +24,56 @@ fn ids_json(ids: &[i64]) -> String {
     serde_json::to_string(ids).expect("ids serialize")
 }
 
+/// Set a column on the items among `ids` that `which` selects, and record the change for
+/// folders that keep their library info in `.memora` (see `sync`). Returns how many changed.
+fn change(db: &Db, ids: &[i64], which: &str, set: &str, value: Option<String>, field: &'static str, synced: Value) -> Result<usize> {
+    let mut conn = db.conn()?;
+    let tx = conn.transaction()?;
+    let changed: Vec<i64> = {
+        let mut stmt = tx.prepare(&format!("SELECT id FROM media WHERE {which} AND id IN (SELECT value FROM json_each(?1))"))?;
+        stmt.query_map([ids_json(ids)], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?
+    };
+    let sql = format!("UPDATE media SET {set} WHERE id IN (SELECT value FROM json_each(?1))");
+    match value {
+        Some(v) => tx.execute(&sql, params![ids_json(&changed), v])?,
+        None => tx.execute(&sql, [ids_json(&changed)])?,
+    };
+    sync::record_media(&tx, &changed, field, synced)?;
+    tx.commit()?;
+    Ok(changed.len())
+}
+
+fn now() -> String {
+    Utc::now().format(TIME_FORMAT).to_string()
+}
+
 /// Returns how many items changed.
 pub fn set_favorite(db: &Db, ids: &[i64], favorite: bool) -> Result<usize> {
-    Ok(db.conn()?.execute(
-        "UPDATE media SET favorite = ?2
-         WHERE favorite != ?2 AND id IN (SELECT value FROM json_each(?1))",
-        params![ids_json(ids), favorite],
-    )?)
+    let (which, set) = if favorite { ("favorite = 0", "favorite = 1") } else { ("favorite = 1", "favorite = 0") };
+    change(db, ids, which, set, None, "fav", json!(favorite))
 }
 
 /// Hide items in the trash. Returns how many items changed.
 pub fn trash(db: &Db, ids: &[i64]) -> Result<usize> {
-    Ok(db.conn()?.execute(
-        "UPDATE media SET trashed_at = ?2
-         WHERE trashed_at IS NULL AND id IN (SELECT value FROM json_each(?1))",
-        params![ids_json(ids), Utc::now().format(TIME_FORMAT).to_string()],
-    )?)
+    let t = now();
+    change(db, ids, "trashed_at IS NULL", "trashed_at = ?2", Some(t.clone()), "trash", json!(t))
 }
 
 /// Take items out of the trash. Returns how many items changed.
 pub fn restore(db: &Db, ids: &[i64]) -> Result<usize> {
-    Ok(db.conn()?.execute(
-        "UPDATE media SET trashed_at = NULL
-         WHERE trashed_at IS NOT NULL AND id IN (SELECT value FROM json_each(?1))",
-        [ids_json(ids)],
-    )?)
+    change(db, ids, "trashed_at IS NOT NULL", "trashed_at = NULL", None, "trash", Value::Null)
+}
+
+/// Move items to the Archive: they stay in their albums and keep their favorite flag and
+/// faces, but are shown only on the Archive page. Returns how many items changed.
+pub fn archive(db: &Db, ids: &[i64]) -> Result<usize> {
+    let t = now();
+    change(db, ids, "archived_at IS NULL", "archived_at = ?2", Some(t.clone()), "arch", json!(t))
+}
+
+/// Bring items back from the Archive to where they were. Returns how many items changed.
+pub fn unarchive(db: &Db, ids: &[i64]) -> Result<usize> {
+    change(db, ids, "archived_at IS NOT NULL", "archived_at = NULL", None, "arch", Value::Null)
 }
 
 /// What an empty-trash run did.
@@ -231,6 +257,64 @@ mod tests {
         assert_eq!(f.ids(&Query::default()), vec![b, a]);
         assert_eq!(f.ids(&scope(Scope::Favorites)), vec![a], "still a favorite after restore");
         assert!(f.ids(&scope(Scope::Trash)).is_empty());
+    }
+
+    #[test]
+    fn archived_items_show_only_in_the_archive() {
+        let f = fixture();
+        let a = f.photo("beach_a.jpg", "2024-01-01T10:00:00");
+        let b = f.photo("beach_b.jpg", "2024-01-02T10:00:00");
+        let c = f.photo("beach_c.jpg", "2024-01-03T10:00:00");
+        set_favorite(&f.db, &[a], true).unwrap();
+        let trip = albums::create(&f.db, "Trip").unwrap();
+        albums::add_items(&f.db, trip.id, &[a, b]).unwrap();
+        albums::set_cover(&f.db, trip.id, a).unwrap();
+        {
+            let conn = f.db.conn().unwrap();
+            conn.execute("UPDATE media SET camera_make = 'Solo', lat = 10.0, lon = 20.0 WHERE id = ?1", [a]).unwrap();
+            conn.execute("INSERT INTO places (country, admin1, city) VALUES ('IN', 'WB', 'Kolkata')", []).unwrap();
+            conn.execute("UPDATE media SET place_id = 1 WHERE id IN (?1, ?2)", [a, b]).unwrap();
+        }
+        let album_q = Query { scope: Scope::Album, album: Some(trip.id), ..Query::default() };
+        let text = Query { q: Some("beach".into()), ..Query::default() };
+        let also = Query { also: vec![a, b], ..Query::default() };
+        let place = Query { place: Some(1), ..Query::default() };
+
+        assert_eq!(archive(&f.db, &[a, a, 999]).unwrap(), 1);
+        assert_eq!(archive(&f.db, &[a]).unwrap(), 0, "already archived");
+        assert_eq!(f.ids(&scope(Scope::Archive)), vec![a]);
+        assert!(media::get(&f.db, a).unwrap().archived);
+        assert_eq!(f.ids(&Query::default()), vec![c, b]);
+        assert!(f.ids(&scope(Scope::Favorites)).is_empty(), "archived favorites leave Favorites");
+        assert_eq!(f.ids(&album_q), vec![b]);
+        assert_eq!(f.ids(&text), vec![c, b], "text search");
+        assert_eq!(f.ids(&also), vec![b], "people / content search hits");
+        assert_eq!(f.ids(&place), vec![b]);
+        assert!(media::map_points(&f.db).unwrap().is_empty());
+        assert!(media::cameras(&f.db).unwrap().is_empty());
+        let album = albums::get(&f.db, trip.id).unwrap();
+        assert_eq!((album.count, album.cover_id), (1, Some(b)), "cover falls back to the next item");
+        let p = crate::places::list(&f.db).unwrap();
+        assert_eq!((p[0].count, p[0].cover_id), (1, Some(b)));
+        assert!(crate::browse::years(&f.db).unwrap().iter().all(|y| y.count == 2));
+        assert!(media::get_visible(&f.db, a, false).is_err(), "not shared on the network...");
+        assert!(media::get_visible(&f.db, a, true).is_ok(), "...unless the Archive is");
+        assert_eq!(f.ids(&Query { scope: Scope::Archive, q: Some("beach".into()), ..Query::default() }), vec![a]);
+
+        // Trash wins; restoring puts the item back in the Archive.
+        trash(&f.db, &[a]).unwrap();
+        assert!(f.ids(&scope(Scope::Archive)).is_empty());
+        assert_eq!(f.ids(&scope(Scope::Trash)), vec![a]);
+        restore(&f.db, &[a]).unwrap();
+        assert_eq!(f.ids(&scope(Scope::Archive)), vec![a]);
+
+        // Unarchive brings it back exactly where it was.
+        assert_eq!(unarchive(&f.db, &[a, b]).unwrap(), 1);
+        assert!(f.ids(&scope(Scope::Archive)).is_empty());
+        assert_eq!(f.ids(&scope(Scope::Favorites)), vec![a]);
+        assert_eq!(albums::get(&f.db, trip.id).unwrap().cover_id, Some(a));
+        assert_eq!(f.ids(&text), vec![c, b, a]);
+        assert_eq!(media::map_points(&f.db).unwrap().len(), 1);
     }
 
     #[test]

@@ -1,3 +1,4 @@
+mod data_folder;
 mod desktop;
 mod window_chrome;
 
@@ -115,15 +116,32 @@ pub fn run() {
                 }
                 let _ = window.show();
             }
-            let paths = AppPaths::from_env()?;
+            let paths = loop {
+                match AppPaths::from_env()? {
+                    Ok(paths) => break paths,
+                    // Moved to a drive that isn't plugged in.
+                    Err(dir) => {
+                        let text = format!(
+                            "Memora keeps its library data in {}, which can't be reached right now.\n\n\
+                             Connect the drive and choose Retry.",
+                            dir.display()
+                        );
+                        if !desktop::ask_retry("Memora", &text) {
+                            std::process::exit(0);
+                        }
+                    }
+                }
+            };
             tracing::info!("library data in {}", paths.data_dir.display());
+            // After a move: delete the old copy now that the new one is in use.
+            photos_core::storage::finish_move(&paths);
             let db = Db::open(&paths.db_path)?;
             let library = Library::start(db, paths.clone())?;
             let handle = app.handle().clone();
             library.subscribe(move |status| {
                 let _ = handle.emit("index-progress", status);
             });
-            let ai = photos_ml::Ai::start(library.clone(), photos_ml::model_dirs(&paths.data_dir));
+            let ai = photos_ml::Ai::start(library.clone(), photos_ml::model_dirs(&paths.home_dir));
             let server = tauri::async_runtime::block_on(photos_server::start_local(library.clone(), ai))?;
 
             app.manage(ServerInfo {
@@ -143,7 +161,11 @@ pub fn run() {
             open_with_default_app,
             show_system_menu,
             set_max_button_rect,
-            set_wallpaper
+            set_wallpaper,
+            data_folder::data_folder,
+            data_folder::data_folder_target,
+            data_folder::move_data_folder,
+            data_folder::restart_app
         ])
         .build(tauri::generate_context!())
         .expect("error while starting Memora")

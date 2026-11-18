@@ -8,7 +8,7 @@
   import Icon from './lib/Icon.svelte'
   import type { IconName } from './lib/icons'
   import { formatBytes } from './lib/dates'
-  import { isBusy, library, watchLibrary } from './lib/library.svelte'
+  import { isBusy, library, watchLibrary, indexingStep } from './lib/library.svelte'
   import { goSearch, router, type Route } from './lib/router.svelte'
   import { applyTheme } from './lib/theme'
   import { appWindow, inTauri, showSystemMenu, titleBarContextMenu } from './lib/window.svelte'
@@ -26,12 +26,14 @@
   import Search from './pages/Search.svelte'
   import Settings from './pages/Settings.svelte'
   import Trash from './pages/Trash.svelte'
+  import Archive from './pages/Archive.svelte'
   import Utilities from './pages/Utilities.svelte'
 
   const nav: { route: Route; label: string; icon: IconName }[] = [
     { route: 'photos', label: 'Photos', icon: 'photo' },
     { route: 'explore', label: 'Explore', icon: 'explore' },
     { route: 'favorites', label: 'Favorites', icon: 'star' },
+    { route: 'archive', label: 'Archive', icon: 'archive' },
     { route: 'albums', label: 'Albums', icon: 'albums' },
     { route: 'utilities', label: 'Utilities', icon: 'utilities' },
     { route: 'trash', label: 'Trash', icon: 'trash' },
@@ -40,7 +42,7 @@
   watchLibrary()
 
   /** Routes whose content is a photo grid, which fills the whole content area. */
-  const FILL: Route[] = ['photos', 'favorites', 'trash', 'album', 'place', 'person', 'map', 'search']
+  const FILL: Route[] = ['photos', 'favorites', 'archive', 'trash', 'album', 'place', 'person', 'map', 'search']
 
   /** Sidebar entry that stays highlighted on a page. */
   const sidebarFor: Partial<Record<Route, Route>> = {
@@ -98,7 +100,7 @@
     const s = library.status
     if (!isBusy(s)) return null
     if (s!.scanning && s!.scannedFiles > 0) return `Scanning… ${s!.scannedFiles.toLocaleString()} found`
-    if (s!.pending > 0) return `Indexing… ${s!.pending.toLocaleString()} left`
+    if (s!.pending > 0) return indexingStep(s!)
     return 'Scanning…'
   })
 
@@ -194,6 +196,8 @@
       <Photos />
     {:else if router.route === 'favorites'}
       <Favorites />
+    {:else if router.route === 'archive'}
+      <Archive />
     {:else if router.route === 'albums'}
       <Albums />
     {:else if router.route === 'album' && router.id !== null}

@@ -11,7 +11,7 @@ use rayon::prelude::*;
 use serde::Serialize;
 
 use crate::db::Db;
-use crate::{Error, Result};
+use crate::{Error, Result, sync};
 
 /// Length of a face embedding (SFace).
 pub const FACE_DIM: usize = 128;
@@ -22,7 +22,7 @@ pub const BY_USER: i64 = 1;
 pub const NOT_THIS_PERSON: i64 = 2;
 
 const MAX_NAME: usize = 100;
-const VISIBLE: &str = "m.missing = 0 AND m.trashed_at IS NULL";
+use crate::media::VISIBLE_M as VISIBLE;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -99,18 +99,28 @@ pub fn rename(db: &Db, id: i64, name: Option<&str>) -> Result<Person> {
     if name.is_some_and(|n| n.chars().count() > MAX_NAME) {
         return Err(Error::invalid(format!("names can have at most {MAX_NAME} characters")));
     }
-    let n = db.conn()?.execute("UPDATE persons SET name = ?2 WHERE id = ?1", params![id, name])?;
+    let mut conn = db.conn()?;
+    let tx = conn.transaction()?;
+    let n = tx.execute("UPDATE persons SET name = ?2 WHERE id = ?1", params![id, name])?;
     if n == 0 {
         return Err(Error::NotFound);
     }
+    sync::record_person(&tx, id)?;
+    tx.commit()?;
+    drop(conn);
     get(db, id)
 }
 
 pub fn set_hidden(db: &Db, id: i64, hidden: bool) -> Result<Person> {
-    let n = db.conn()?.execute("UPDATE persons SET hidden = ?2 WHERE id = ?1", params![id, hidden])?;
+    let mut conn = db.conn()?;
+    let tx = conn.transaction()?;
+    let n = tx.execute("UPDATE persons SET hidden = ?2 WHERE id = ?1", params![id, hidden])?;
     if n == 0 {
         return Err(Error::NotFound);
     }
+    sync::record_person(&tx, id)?;
+    tx.commit()?;
+    drop(conn);
     get(db, id)
 }
 
@@ -144,6 +154,7 @@ pub fn merge(db: &Db, from: &[i64], into: i64) -> Result<Person> {
         tx.execute("DELETE FROM persons WHERE id = ?1", [id])?;
     }
     tx.execute("UPDATE persons SET name = ?2 WHERE id = ?1", params![into, name])?;
+    sync::record_person(&tx, into)?;
     tx.commit()?;
     drop(conn);
     get(db, into)
@@ -182,15 +193,18 @@ pub fn media_of_face(db: &Db, face_id: i64) -> Result<(i64, [f32; 4])> {
 /// Put a face with a person (chosen by the user), or with nobody: "not this person",
 /// which also keeps automatic grouping from putting it anywhere again.
 pub fn set_face_person(db: &Db, face_id: i64, person: Option<i64>) -> Result<()> {
-    let conn = db.conn()?;
     if let Some(p) = person {
         get(db, p)?;
     }
+    let mut conn = db.conn()?;
+    let tx = conn.transaction()?;
     let locked = if person.is_some() { BY_USER } else { NOT_THIS_PERSON };
-    let n = conn.execute("UPDATE faces SET person_id = ?2, locked = ?3 WHERE id = ?1", params![face_id, person, locked])?;
+    let n = tx.execute("UPDATE faces SET person_id = ?2, locked = ?3 WHERE id = ?1", params![face_id, person, locked])?;
     if n == 0 {
         return Err(Error::NotFound);
     }
+    sync::record_faces(&tx, &[face_id])?;
+    tx.commit()?;
     Ok(())
 }
 

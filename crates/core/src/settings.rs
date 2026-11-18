@@ -28,6 +28,8 @@ pub struct Settings {
     /// While sharing: the DLNA media server TVs find in their source list. TVs can't enter
     /// a PIN, so anyone on the network can browse it.
     pub lan_dlna: bool,
+    /// While sharing: an Archive row on the TV page and an Archive folder for DLNA.
+    pub lan_archive: bool,
     /// Optional PIN required to open the TV web page.
     pub tv_pin: Option<String>,
     /// Convert videos the TV can't play (HEVC, MKV, ...) on the fly.
@@ -46,6 +48,7 @@ impl Default for Settings {
             lan_port: 8200,
             lan_tv_page: true,
             lan_dlna: true,
+            lan_archive: true,
             tv_pin: None,
             transcode_videos: true,
             ml_enabled: true,

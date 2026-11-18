@@ -2,7 +2,8 @@
 //! serves the TV web page (`/tv`) and the DLNA media server (`/dlna` + SSDP discovery).
 //!
 //! It is off by default and follows the settings: [`Lan::apply`] starts, restarts or stops
-//! it. Nothing on this listener can change the library, and trashed items are never served.
+//! it. Nothing on this listener can change the library, trashed items are never served, and
+//! archived items only in the Archive row/folder when that is switched on.
 
 pub(crate) mod files;
 pub(crate) mod net;
@@ -39,6 +40,8 @@ pub(crate) struct LanConfig {
     pub port: u16,
     pub tv_page: bool,
     pub dlna: bool,
+    /// Archived items in their own Archive row (TV page) and folder (DLNA).
+    pub archive: bool,
     pub device_name: String,
     pub pin: Option<String>,
     pub transcode: bool,
@@ -185,6 +188,7 @@ fn wanted_config(s: &Settings, uuid: &str, secret: &str) -> Option<LanConfig> {
         port: s.lan_port,
         tv_page: s.lan_tv_page,
         dlna: s.lan_dlna,
+        archive: s.lan_archive,
         device_name: s.device_name.trim().to_owned(),
         pin: s.tv_pin.clone().filter(|p| !p.is_empty()),
         transcode: s.transcode_videos,

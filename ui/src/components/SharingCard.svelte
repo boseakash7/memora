@@ -159,6 +159,21 @@
       <label class="check">
         <input
           type="checkbox"
+          checked={settings.lanArchive}
+          disabled={busy}
+          onchange={(e) => save({ lanArchive: e.currentTarget.checked })}
+        />
+        <span>
+          Show the Archive
+          <span class="muted">
+            An Archive row on the TV page and an Archive folder on the TV. The DLNA folder has no PIN, so anyone on
+            your Wi-Fi can open it while this is on.
+          </span>
+        </span>
+      </label>
+      <label class="check">
+        <input
+          type="checkbox"
           checked={settings.transcodeVideos}
           disabled={busy}
           onchange={(e) => save({ transcodeVideos: e.currentTarget.checked })}

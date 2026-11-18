@@ -385,7 +385,7 @@ mod tests {
         let paths = AppPaths::in_dir(&dir.path().join("data")).unwrap();
         let lib = Library::start(Db::open(&paths.db_path).unwrap(), paths).unwrap();
         let ai = Ai::start(lib.clone(), vec![models]);
-        lib.add_folder(&root).unwrap();
+        lib.add_folder(&root, false).unwrap();
 
         let start = Instant::now();
         loop {

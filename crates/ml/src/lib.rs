@@ -54,8 +54,9 @@ pub enum Device {
 }
 
 /// Folders searched for model files, in order: `MEMORA_MODELS_DIR`, `models` next to the
-/// program (installed app), then `models` in the data folder.
-pub fn model_dirs(data_dir: &Path) -> Vec<PathBuf> {
+/// program (installed app), then `models` in Memora's home folder (`%LOCALAPPDATA%\Memora`,
+/// which stays put when the library data is moved).
+pub fn model_dirs(home_dir: &Path) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(d) = std::env::var_os("MEMORA_MODELS_DIR") {
         dirs.push(PathBuf::from(d));
@@ -63,7 +64,7 @@ pub fn model_dirs(data_dir: &Path) -> Vec<PathBuf> {
     if let Some(exe_dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)) {
         dirs.push(exe_dir.join("models"));
     }
-    dirs.push(data_dir.join("models"));
+    dirs.push(home_dir.join("models"));
     dirs
 }
 
@@ -122,10 +123,25 @@ pub fn open_session(path: &Path, gpu: bool, sizes: &[(&str, i64)]) -> Result<(Se
 /// them are skipped otherwise).
 #[cfg(test)]
 pub(crate) fn test_models() -> Option<PathBuf> {
-    let data = photos_core::AppPaths::from_env().ok()?.data_dir;
-    let found = find_models(&model_dirs(&data));
+    let home = photos_core::storage::home_dir().ok()?;
+    let found = find_models(&model_dirs(&home));
     if found.is_none() {
         eprintln!("models not installed; skipping");
     }
     found
+}
+
+#[cfg(test)]
+mod recognition_label {
+    /// Index snapshots carry `photos_core::ai::RECOGNITION` to say which models made their
+    /// faces and CLIP vectors. Changing a model file must change that label.
+    #[test]
+    fn names_the_model_files() {
+        let label = photos_core::ai::RECOGNITION;
+        for part in ["yunet-2023mar", "sface-2021dec", "clip-vit-base-patch32", "quantized"] {
+            assert!(label.contains(part), "{label} lacks {part}");
+        }
+        assert!(super::YUNET.contains("yunet_2023mar") && super::SFACE.contains("sface_2021dec"));
+        assert!(super::CLIP_VISION.starts_with("clip-vit-base-patch32/") && super::CLIP_VISION.contains("quantized"));
+    }
 }

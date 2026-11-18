@@ -14,8 +14,7 @@ priorities change as people try the app. Have an idea? [Open an issue](../../iss
 - [x] TV streaming: DLNA/UPnP media server and a TV-friendly web page on your home network (optional PIN for the web page)
 - [x] Light and dark theme
 
-## Next (v0.2): polish, reach and smart search
-- [ ] Signed installer (the build signs the app and installer once a code-signing certificate is set up; the certificate itself is still to get)
+## Shipped (v0.2): polish, reach and smart search
 - [x] Bundled FFmpeg and recognition models, so there is nothing else to install
 - [x] Windows Firewall rule created by the installer for TV sharing (private networks only)
 - [x] RAW support (CR2, CR3, NEF, ARW, DNG, RAF, ORF, RW2, PEF, ...)
@@ -28,12 +27,14 @@ priorities change as people try the app. Have an idea? [Open an issue](../../iss
 ## Soon (v0.3): organize and carry your library
 - [x] Custom title bar: Memora's own top bar with window buttons instead of the Windows title bar (snap, resize and the Windows window menu keep working)
 - [x] Right-click menus for photos and videos (favorite, album, archive, copy image or path, show in Explorer, open with, set as desktop background, trash), also for a selection, in the viewer and in Trash
-- [ ] Archive: hide photos from everywhere except the Archive page; an Archive row on the TV page and an Archive folder for DLNA (can be switched off)
-- [ ] Your library goes with your photos: a hidden `.memora` folder in each watched folder keeps favorites, albums, archive, trash and people names, so another PC that adds the same folder (external drive, NAS or a synced folder) shows the same library and stays in sync. It also stores the finished index, so the second PC skips the slow indexing and recognition
-- [ ] Move Memora's data and cache to another drive; "Locate folder" when a drive letter changes
-- [ ] Back up and restore library info as one file
+- [x] Archive: hide photos from everywhere except the Archive page; an Archive row on the TV page and an Archive folder for DLNA (can be switched off)
+- [x] Your library goes with your photos: a hidden `.memora` folder in each watched folder keeps favorites, albums, archive, trash and people names, so another PC that adds the same folder (external drive, NAS or a synced folder) shows the same library and stays in sync
+- [x] The `.memora` folder also stores the finished index, so the second PC skips the slow indexing and recognition
+- [x] Move Memora's data and cache to another drive; "Locate folder" when a drive letter changes
+- [x] Back up and restore library info as one file
 
 ## Later (v0.4+)
+- [ ] Signed installer, so Windows SmartScreen doesn't warn (moved from v0.2: the build already signs the app and installer once a code-signing certificate is set up; the certificate itself is still to get)
 - [ ] Private vault ("Locked folder"): encrypted on disk, password + recovery key, never shown on the LAN or TV
 - [ ] Memories: "on this day" and auto-generated highlight collections
 - [ ] Bulk edit: fix dates, locations and captions

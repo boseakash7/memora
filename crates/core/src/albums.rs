@@ -6,7 +6,7 @@ use r2d2_sqlite::rusqlite::{OptionalExtension, Row, params};
 use serde::Serialize;
 
 use crate::db::Db;
-use crate::{Error, Result};
+use crate::{Error, Result, sync};
 
 const MAX_NAME: usize = 200;
 
@@ -31,7 +31,7 @@ pub struct AlbumRef {
     pub name: String,
 }
 
-const VISIBLE: &str = "m.missing = 0 AND m.trashed_at IS NULL";
+use crate::media::VISIBLE_M as VISIBLE;
 
 fn select_albums(filter: &str) -> String {
     format!(
@@ -107,24 +107,36 @@ pub fn create(db: &Db, name: &str) -> Result<Album> {
 
 pub fn rename(db: &Db, id: i64, name: &str) -> Result<Album> {
     let name = clean_name(name)?;
-    let n = db.conn()?.execute("UPDATE albums SET name = ?2 WHERE id = ?1", params![id, name])?;
+    let mut conn = db.conn()?;
+    let tx = conn.transaction()?;
+    let n = tx.execute("UPDATE albums SET name = ?2 WHERE id = ?1", params![id, name])?;
     if n == 0 {
         return Err(Error::NotFound);
     }
+    sync::record_album(&tx, id, false)?;
+    tx.commit()?;
+    drop(conn);
     get(db, id)
 }
 
 /// Use an item of the album as its cover.
 pub fn set_cover(db: &Db, id: i64, media_id: i64) -> Result<Album> {
-    let n = db.conn()?.execute(
+    let mut conn = db.conn()?;
+    let tx = conn.transaction()?;
+    let n = tx.execute(
         "UPDATE albums SET cover_media_id = ?2
          WHERE id = ?1 AND EXISTS (SELECT 1 FROM album_items WHERE album_id = ?1 AND media_id = ?2)",
         params![id, media_id],
     )?;
     if n == 0 {
+        drop(tx);
+        drop(conn);
         get(db, id)?; // NotFound if the album is unknown
         return Err(Error::invalid("that item is not in the album"));
     }
+    sync::record_album_cover(&tx, id, media_id)?;
+    tx.commit()?;
+    drop(conn);
     get(db, id)
 }
 
@@ -132,13 +144,15 @@ pub fn set_cover(db: &Db, id: i64, media_id: i64) -> Result<Album> {
 pub fn delete(db: &Db, id: i64) -> Result<()> {
     let mut conn = db.conn()?;
     let tx = conn.transaction()?;
+    // Recorded while its items still show which synced folders know it.
+    sync::record_album(&tx, id, true)?;
     // Remove the items first so the search index drops the album's name from them.
     tx.execute("DELETE FROM album_items WHERE album_id = ?1", [id])?;
     let n = tx.execute("DELETE FROM albums WHERE id = ?1", [id])?;
-    tx.commit()?;
     if n == 0 {
         return Err(Error::NotFound);
     }
+    tx.commit()?;
     Ok(())
 }
 
@@ -146,23 +160,43 @@ pub fn delete(db: &Db, id: i64) -> Result<()> {
 /// Returns how many were added.
 pub fn add_items(db: &Db, id: i64, media_ids: &[i64]) -> Result<usize> {
     get(db, id)?;
-    let n = db.conn()?.execute(
+    let mut conn = db.conn()?;
+    let tx = conn.transaction()?;
+    let new: Vec<i64> = {
+        let mut stmt = tx.prepare(
+            "SELECT m.id FROM media m WHERE m.id IN (SELECT value FROM json_each(?2)) AND m.missing = 0
+             AND NOT EXISTS (SELECT 1 FROM album_items WHERE album_id = ?1 AND media_id = m.id)",
+        )?;
+        stmt.query_map(params![id, ids_json(media_ids)], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?
+    };
+    tx.execute(
         "INSERT OR IGNORE INTO album_items (album_id, media_id, added_at)
-         SELECT ?1, m.id, ?3 FROM media m
-         WHERE m.id IN (SELECT value FROM json_each(?2)) AND m.missing = 0",
-        params![id, ids_json(media_ids), Utc::now().to_rfc3339()],
+         SELECT ?1, value, ?3 FROM json_each(?2)",
+        params![id, ids_json(&new), Utc::now().to_rfc3339()],
     )?;
-    Ok(n)
+    sync::record_album_items(&tx, id, &new, true)?;
+    tx.commit()?;
+    Ok(new.len())
 }
 
 /// Take items out of an album (the photos themselves stay). Returns how many were removed.
 pub fn remove_items(db: &Db, id: i64, media_ids: &[i64]) -> Result<usize> {
     get(db, id)?;
-    let n = db.conn()?.execute(
+    let mut conn = db.conn()?;
+    let tx = conn.transaction()?;
+    let gone: Vec<i64> = {
+        let mut stmt = tx.prepare(
+            "SELECT media_id FROM album_items WHERE album_id = ?1 AND media_id IN (SELECT value FROM json_each(?2))",
+        )?;
+        stmt.query_map(params![id, ids_json(media_ids)], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?
+    };
+    tx.execute(
         "DELETE FROM album_items WHERE album_id = ?1 AND media_id IN (SELECT value FROM json_each(?2))",
-        params![id, ids_json(media_ids)],
+        params![id, ids_json(&gone)],
     )?;
-    Ok(n)
+    sync::record_album_items(&tx, id, &gone, false)?;
+    tx.commit()?;
+    Ok(gone.len())
 }
 
 /// Albums that contain an item.

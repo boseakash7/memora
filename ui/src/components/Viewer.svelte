@@ -18,8 +18,9 @@
   import Icon from '../lib/Icon.svelte'
   import { goAlbum, goPerson } from '../lib/router.svelte'
   import { toast } from '../lib/toast.svelte'
-  import { titleBarContextMenu } from '../lib/window.svelte'
+  import { appWindow, setFullscreen, titleBarContextMenu } from '../lib/window.svelte'
   import AlbumPicker from './AlbumPicker.svelte'
+  import VideoPlayer from './VideoPlayer.svelte'
 
   let {
     items,
@@ -33,7 +34,7 @@
     items: TimelineItem[]
     index: number
     /** The list being viewed: decides which actions are offered. */
-    scope?: 'all' | 'favorites' | 'album' | 'trash'
+    scope?: act.Scope
     albumId?: number | null
     /** Start with the info panel open. */
     info?: boolean
@@ -48,8 +49,8 @@
   // svelte-ignore state_referenced_locally
   let showInfo = $state(openWithInfo)
   let loaded = $state(false)
-  /** `converted`: the webview couldn't play the original, so the PC converts it while playing. */
-  let videoMode = $state<'original' | 'converted' | 'failed'>('original')
+  /** A video is playing and the mouse is still: the bar and controls fade out. */
+  let idle = $state(false)
   let albums = $state<AlbumRef[]>([])
   /** Faces of people (not hidden) in this item. */
   let faces = $state<Face[]>([])
@@ -68,7 +69,7 @@
     scale = 1
     tx = ty = 0
     loaded = false
-    videoMode = 'original'
+    idle = false
     details = null
     albums = []
     faces = []
@@ -158,6 +159,11 @@
     return { w: Math.round(item.w * s), h: Math.round(item.h * s) }
   })
 
+  // Full screen belongs to the viewer: leave it when the viewer closes.
+  $effect(() => () => {
+    if (appWindow.fullscreen) setFullscreen(false)
+  })
+
   const hasPrev = $derived(index > 0)
   const hasNext = $derived(index < items.length - 1)
 
@@ -180,6 +186,7 @@
       scope,
       albumId,
       favorite,
+      archived,
       inViewer: true,
       addToAlbum: () => (picking = true),
       onfavorite: (f) => {
@@ -202,8 +209,10 @@
     else if (e.key === 'ArrowRight') go(1)
     else if (e.key === 'i') showInfo = !showInfo
     else if (e.key === 'Delete' && scope !== 'trash') act.moveToTrash(context())
+    else if (e.key === 'A' && e.shiftKey && !e.ctrlKey && scope !== 'trash') act.toggleArchive(context())
     else if (e.key === 'Escape') {
-      if (scale > 1) resetZoom()
+      if (appWindow.fullscreen) setFullscreen(false)
+      else if (scale > 1) resetZoom()
       else onclose()
     } else return
     e.preventDefault()
@@ -256,6 +265,7 @@
   }
 
   const favorite = $derived(details ? details.favorite : (item.f ?? false))
+  const archived = $derived(details ? details.archived : scope === 'archive')
   const when = $derived(details ? dateTimeLabel(details.takenAt) : null)
   const camera = $derived(
     details ? [details.cameraMake, details.cameraModel].filter(Boolean).join(' ').trim() || null : null,
@@ -294,7 +304,7 @@
 
 <svelte:window {onkeydown} />
 
-<div class="viewer" role="dialog" aria-modal="true" aria-label="Photo viewer">
+<div class="viewer" class:idle={idle && item.v} role="dialog" aria-modal="true" aria-label="Photo viewer">
   <div class="viewer-main">
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="viewer-bar" data-tauri-drag-region="deep" oncontextmenu={titleBarContextMenu}>
@@ -319,6 +329,13 @@
         {#if albumId !== null}
           <button class="icon-btn" title="Use as album cover" onclick={run(act.useAsCover)}><Icon name="photo" /></button>
         {/if}
+        <button
+          class="icon-btn"
+          title={archived ? 'Unarchive (Shift+A)' : 'Archive (Shift+A)'}
+          onclick={run(act.toggleArchive)}
+        >
+          <Icon name={archived ? 'unarchive' : 'archive'} />
+        </button>
         <button class="icon-btn" title="Move to trash (Delete)" onclick={run(act.moveToTrash)}><Icon name="trash" /></button>
       {/if}
       <button class="icon-btn" title="Show in Explorer" onclick={run(act.revealInExplorer)}>
@@ -347,33 +364,13 @@
     >
       {#key item.id}
         {#if item.v}
-          {#if videoMode === 'failed'}
-            <div class="viewer-message">
-              <Icon name="brokenImage" size={48} />
-              <p>This video's format can't be played here.</p>
-              <button class="btn" onclick={run(act.openWithDefault)}>
-                <Icon name="openExternal" size={20} /> Open in default player
-              </button>
-            </div>
-          {:else}
-            <!-- svelte-ignore a11y_media_has_caption -->
-            <video
-              class="viewer-video"
-              style:width="{box.w}px"
-              style:height="{box.h}px"
-              src={mediaUrl(item.id, videoMode === 'converted' ? 'stream.mp4' : 'original')}
-              poster={mediaUrl(item.id, 'thumb', item.m)}
-              controls
-              autoplay
-              onerror={() => (videoMode = videoMode === 'original' ? 'converted' : 'failed')}
-            ></video>
-            {#if videoMode === 'converted'}
-              <div class="viewer-note">
-                Playing a converted copy; skipping ahead is limited.
-                <button class="link" onclick={run(act.openWithDefault)}>Open in default player</button>
-              </div>
-            {/if}
-          {/if}
+          <VideoPlayer
+            {item}
+            {box}
+            keys={!picking && !dialogs.current}
+            bind:idle
+            onopenexternal={run(act.openWithDefault)}
+          />
         {:else}
           <div
             class="viewer-photo"
@@ -511,6 +508,15 @@
             {/if}
           </div>
         </div>
+        {#if details.archived}
+          <div class="info-row">
+            <Icon name="archive" />
+            <div>
+              <div>Archived</div>
+              <div class="muted">Shown only in the Archive</div>
+            </div>
+          </div>
+        {/if}
         {#if details.error}
           <div class="info-row warn">
             <Icon name="warning" />

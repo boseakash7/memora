@@ -13,7 +13,7 @@ use serde::Serialize;
 
 use crate::db::Db;
 use crate::hash::hamming;
-use crate::media::Stage;
+use crate::media::{Stage, VISIBLE};
 use crate::Result;
 
 /// Pictures whose hashes differ in at most this many of 64 bits count as near-duplicates.
@@ -93,12 +93,12 @@ fn keeper_rank(c: &Candidate) -> (std::cmp::Reverse<u64>, bool, &str, i64) {
 pub fn find(db: &Db) -> Result<Vec<Group>> {
     let candidates: Vec<Candidate> = {
         let conn = db.conn()?;
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare(&format!(
             "SELECT id, name, path, width, height, size, taken_at, mtime, kind, duration_ms, blake3, phash,
                     (camera_make IS NOT NULL OR lat IS NOT NULL)
              FROM media
-             WHERE missing = 0 AND trashed_at IS NULL AND stage >= ?1 AND error IS NULL AND blake3 IS NOT NULL",
-        )?;
+             WHERE {VISIBLE} AND stage >= ?1 AND error IS NULL AND blake3 IS NOT NULL"
+        ))?;
         stmt.query_map([Stage::HASH], candidate)?.collect::<std::result::Result<_, _>>()?
     };
 

@@ -1,5 +1,6 @@
 //! Media files for the network: thumbnails, TV-sized photos, originals and converted
-//! videos. Only visible items (not trashed or missing) are served.
+//! videos. Only visible items (not trashed or missing; archived ones only while the Archive
+//! is shared) are served.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
@@ -38,8 +39,9 @@ pub fn client_ip(req: &Request) -> IpAddr {
 /// The visible item, with its video codecs filled in.
 pub async fn visible(s: &LanState, id: i64) -> Result<Media, ApiError> {
     let db = s.app.library.db().clone();
+    let archive = s.cfg().archive;
     blocking(move || {
-        let mut m = media::get_visible(&db, id)?;
+        let mut m = media::get_visible(&db, id, archive)?;
         media::ensure_codecs(&db, &mut m)?;
         Ok(m)
     })

@@ -4,6 +4,7 @@
 import {
   api,
   errorMessage,
+  frameUrl,
   mediaUrl,
   openWithDefaultApp,
   setWallpaper,
@@ -15,7 +16,7 @@ import { confirmDialog } from './dialogs.svelte'
 import { toast } from './toast.svelte'
 
 /** The list the items are shown in. */
-export type Scope = 'all' | 'favorites' | 'album' | 'trash'
+export type Scope = 'all' | 'favorites' | 'album' | 'archive' | 'trash'
 
 export type ActionContext = {
   /** The items to act on (at least one). */
@@ -24,13 +25,15 @@ export type ActionContext = {
   albumId: number | null
   /** Whether the item is a favorite, when known better than `items[0].f` (the viewer's details). */
   favorite?: boolean
+  /** Whether the items are archived, when known better than the scope (the viewer's details). */
+  archived?: boolean
   /** In the viewer: quieter (no toast for favorites), and no Open/Select/Info entries. */
   inViewer?: boolean
   /** Opens the album picker for these ids. */
   addToAlbum: (ids: number[]) => void
   /** Favorite flag changed. */
   onfavorite?: (favorite: boolean) => void
-  /** The items left this list (trashed, restored, deleted, removed from the album, unfavorited). */
+  /** The items left this list (trashed, restored, deleted, (un)archived, removed from the album, unfavorited). */
   onremoved?: () => void
   /** Grid only: open in the viewer, open with the info panel, select. */
   open?: () => void
@@ -52,6 +55,10 @@ async function attempt(action: () => Promise<void>) {
 
 export function isFavorite(c: ActionContext): boolean {
   return c.favorite ?? c.items.every((i) => i.f)
+}
+
+export function isArchived(c: ActionContext): boolean {
+  return c.archived ?? c.scope === 'archive'
 }
 
 // ---------- actions ----------
@@ -76,6 +83,26 @@ export const moveToTrash = (c: ActionContext) =>
     toast(list.length === 1 ? 'Moved to trash' : `Moved ${countLabel(list.length)} to trash`, {
       action: { label: 'Undo', run: () => attempt(() => api.items.restore(list)) },
     })
+  })
+
+/** Archive the items, or bring them back when they are archived. */
+export const toggleArchive = (c: ActionContext) =>
+  attempt(async () => {
+    const list = ids(c)
+    const one = list.length === 1
+    if (isArchived(c)) {
+      await api.items.unarchive(list)
+      c.onremoved?.()
+      toast(one ? 'Removed from the archive' : `Removed ${countLabel(list.length)} from the archive`, {
+        action: { label: 'Undo', run: () => attempt(() => api.items.archive(list)) },
+      })
+    } else {
+      await api.items.archive(list)
+      c.onremoved?.()
+      toast(one ? 'Archived' : `Archived ${countLabel(list.length)}`, {
+        action: { label: 'Undo', run: () => attempt(() => api.items.unarchive(list)) },
+      })
+    }
   })
 
 export const restoreFromTrash = (c: ActionContext) =>
@@ -155,6 +182,19 @@ export const copyImage = (c: ActionContext) => {
   })
 }
 
+/** Puts the video frame at `t` seconds on the clipboard, full size (the PC decodes it). */
+export const copyVideoFrame = (id: number, t: number) => {
+  // Started right away (inside the click), the clipboard waits for the picture.
+  const png = fetch(frameUrl(id, t)).then((res) => {
+    if (!res.ok) throw new Error(`The frame could not be read (${res.status})`)
+    return res.blob()
+  })
+  return attempt(async () => {
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })])
+    toast('Frame copied')
+  })
+}
+
 export const makeWallpaper = (c: ActionContext) =>
   attempt(async () => {
     await setWallpaper(c.items[0].id)
@@ -162,6 +202,12 @@ export const makeWallpaper = (c: ActionContext) =>
   })
 
 // ---------- menus ----------
+
+export function archiveEntry(c: ActionContext): MenuEntry {
+  return isArchived(c)
+    ? { label: 'Unarchive', icon: 'unarchive', shortcut: 'Shift+A', run: () => toggleArchive(c) }
+    : { label: 'Archive', icon: 'archive', shortcut: 'Shift+A', run: () => toggleArchive(c) }
+}
 
 /** Right-click menu for photos and videos: one item, a selection, or items in the Trash. */
 export function itemMenu(c: ActionContext): { header?: string; entries: MenuEntry[] } {
@@ -194,6 +240,7 @@ export function itemMenu(c: ActionContext): { header?: string; entries: MenuEntr
       run: () => toggleFavorite(c),
     },
     { label: 'Add to album…', icon: 'libraryAdd', run: () => c.addToAlbum(ids(c)) },
+    archiveEntry(c),
   )
   if (c.albumId !== null) {
     if (one) entries.push({ label: 'Use as album cover', icon: 'photo', run: () => useAsCover(c) })

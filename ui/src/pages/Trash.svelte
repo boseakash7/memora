@@ -6,9 +6,18 @@
   import { toast } from '../lib/toast.svelte'
 
   async function emptyTrash(count: number) {
+    // Folders that keep library info for other PCs: the trash is theirs too.
+    const shared = await api.folders
+      .list()
+      .then((all) => all.some((f) => f.sync))
+      .catch(() => false)
     const ok = await confirmDialog({
       title: 'Empty trash?',
-      message: `${count.toLocaleString()} ${count === 1 ? 'file is' : 'files are'} moved to the Windows Recycle Bin and removed from the library. You can still get them back from the Recycle Bin.`,
+      message:
+        `${count.toLocaleString()} ${count === 1 ? 'file is' : 'files are'} moved to the Windows Recycle Bin and removed from the library. You can still get them back from the Recycle Bin.` +
+        (shared
+          ? ' The trash is shared with other PCs that use the same folders: files they have are removed there too (now if the folder is shared, otherwise when their trash is emptied).'
+          : ''),
       confirmLabel: 'Empty trash',
       danger: true,
     })

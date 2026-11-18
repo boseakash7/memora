@@ -6,6 +6,7 @@
     moveToTrash,
     removeFromAlbum,
     restoreFromTrash,
+    toggleArchive,
     toggleFavorite,
     type ActionContext,
   } from '../lib/actions'
@@ -211,6 +212,7 @@
     if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT')) return
     if (e.key === 'Escape' && selected.size > 0) clearSelection()
     else if (e.key === 'Delete' && selected.size > 0 && scope !== 'trash') onSelection(moveToTrash)()
+    else if (e.key === 'A' && e.shiftKey && !e.ctrlKey && selected.size > 0 && scope !== 'trash') onSelection(toggleArchive)()
     else if ((e.ctrlKey || e.metaKey) && e.key === 'a' && items && items.length > 0) selected = new Set(items.map((i) => i.id))
     else return
     e.preventDefault()
@@ -269,6 +271,11 @@
         </button>
         {#if albumId !== null}
           <button class="icon-btn" title="Remove from this album" onclick={onSelection(removeFromAlbum)}><Icon name="remove" /></button>
+        {/if}
+        {#if scope === 'archive'}
+          <button class="icon-btn" title="Unarchive (Shift+A)" onclick={onSelection(toggleArchive)}><Icon name="unarchive" /></button>
+        {:else}
+          <button class="icon-btn" title="Archive (Shift+A)" onclick={onSelection(toggleArchive)}><Icon name="archive" /></button>
         {/if}
         <button class="icon-btn" title="Move to trash (Delete)" onclick={onSelection(moveToTrash)}><Icon name="trash" /></button>
       {/if}

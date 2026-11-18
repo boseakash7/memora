@@ -10,6 +10,7 @@ use reverse_geocoder::ReverseGeocoder;
 use serde::Serialize;
 
 use crate::db::Db;
+use crate::media::VISIBLE_M;
 use crate::{Error, Result};
 
 /// Photos farther than this from the nearest city get no place.
@@ -80,16 +81,17 @@ pub struct Place {
 }
 
 fn select_places(filter: &str) -> String {
+    let visible_m2 = VISIBLE_M.replace("m.", "m2.");
     format!(
         "SELECT p.id, p.country, p.admin1, p.city, x.cnt, x.cover,
                 (SELECT mtime / 1000 FROM media WHERE id = x.cover)
          FROM places p JOIN (
              SELECT place_id, count(*) AS cnt,
                  (SELECT m2.id FROM media m2
-                   WHERE m2.place_id = m.place_id AND m2.missing = 0 AND m2.trashed_at IS NULL AND m2.stage >= 1
+                   WHERE m2.place_id = m.place_id AND {visible_m2} AND m2.stage >= 1
                    ORDER BY m2.taken_at DESC, m2.id DESC LIMIT 1) AS cover
              FROM media m
-             WHERE place_id IS NOT NULL AND missing = 0 AND trashed_at IS NULL AND stage >= 1
+             WHERE m.place_id IS NOT NULL AND {VISIBLE_M} AND m.stage >= 1
              GROUP BY place_id
          ) x ON x.place_id = p.id
          {filter}"

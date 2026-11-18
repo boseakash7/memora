@@ -78,6 +78,12 @@ impl Index {
         }
     }
 
+    /// Forget the vectors held in memory; the next search loads them again (after many
+    /// were added at once, e.g. from an index snapshot).
+    pub fn reset(&self) {
+        *self.state.write().unwrap() = None;
+    }
+
     /// Items whose picture matches the query (a text vector minus a neutral text's vector),
     /// best first, with their scores.
     /// Items that left the library may still be listed; callers filter by their own query.

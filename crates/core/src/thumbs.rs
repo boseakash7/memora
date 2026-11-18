@@ -1,7 +1,8 @@
 //! Thumbnails for the grid and browser-friendly copies of HEIC, RAW and TIFF photos.
 //!
 //! Cache layout: `cache/<kind>/<id / 1000>/<id>.jpg`, where kind is `thumb` (grid), `display`
-//! (HEIC/TIFF for the viewer), `tv` (photos for TVs) or `tn` (tiny DLNA thumbnails).
+//! (HEIC/TIFF for the viewer), `tv` (photos for TVs), `tn` (tiny DLNA thumbnails) or `story`
+//! (video storyboards for the viewer's seek-bar preview).
 //! Files are keyed by media id, so renames and moves keep their thumbnails.
 
 use std::fs::File;
@@ -29,7 +30,13 @@ pub const TV_MAX_H: u32 = 2160;
 /// DLNA's `JPEG_TN` thumbnails must fit in 160x160.
 pub const SMALL_MAX: u32 = 160;
 const JPEG_QUALITY: u8 = 82;
-const CACHE_KINDS: &[&str] = &["thumb", "display", "tv", "tn"];
+/// Video storyboards: at most this many frames (one per second for shorter videos)...
+pub const STORYBOARD_MAX_FRAMES: u32 = 100;
+/// ...in rows of this many...
+pub const STORYBOARD_COLUMNS: u32 = 10;
+/// ...each fitting in this square (sharp on a 150% display at the preview's 176 px).
+pub const STORYBOARD_TILE: u32 = 240;
+const CACHE_KINDS: &[&str] = &["thumb", "display", "tv", "tn", "story"];
 
 fn cache_file(paths: &AppPaths, kind: &str, id: i64) -> PathBuf {
     paths.cache_dir.join(kind).join((id / 1000).to_string()).join(format!("{id}.jpg"))
@@ -216,6 +223,64 @@ fn still_copy(paths: &AppPaths, media: &Media) -> Result<PathBuf> {
     Ok(display)
 }
 
+/// How a video's storyboard is laid out. Tile `i` shows the video at `i * interval` seconds.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Storyboard {
+    pub frames: u32,
+    pub interval: f64,
+    pub cols: u32,
+    pub rows: u32,
+    pub tile_w: u32,
+    pub tile_h: u32,
+}
+
+impl Storyboard {
+    /// None for items that aren't videos or whose length or size is unknown.
+    pub fn of(media: &Media) -> Option<Storyboard> {
+        if media.format() != Format::Video {
+            return None;
+        }
+        let secs = media.duration_ms.filter(|d| *d > 0)? as f64 / 1000.0;
+        let (w, h) = (media.width.filter(|w| *w > 0)?, media.height.filter(|h| *h > 0)?);
+        let frames = (secs.ceil() as u32).clamp(1, STORYBOARD_MAX_FRAMES);
+        let cols = frames.min(STORYBOARD_COLUMNS);
+        let (tw, th) = fit_within(w, h, STORYBOARD_TILE, STORYBOARD_TILE);
+        Some(Storyboard {
+            frames,
+            interval: secs / frames as f64,
+            cols,
+            rows: frames.div_ceil(cols),
+            // Even sizes keep FFmpeg's 4:2:0 scaling exact.
+            tile_w: (tw & !1).max(2),
+            tile_h: (th & !1).max(2),
+        })
+    }
+}
+
+/// Path to an up-to-date storyboard of a video, made if needed, with its layout.
+pub fn ensure_storyboard(paths: &AppPaths, media: &Media) -> Result<(PathBuf, Storyboard)> {
+    let layout = Storyboard::of(media).ok_or_else(|| Error::media("no storyboard for this item"))?;
+    let path = cache_file(paths, "story", media.id);
+    if !is_fresh(&path, media) {
+        let tile = (layout.tile_w, layout.tile_h);
+        let img = ffmpeg::storyboard(&media.path, layout.interval, tile, layout.cols, layout.rows)?;
+        write_jpeg(&img, &path)?;
+    }
+    Ok((path, layout))
+}
+
+/// A video frame at `secs` at full size (rotation applied, HDR tone mapped), as PNG,
+/// for "Copy this frame".
+pub fn video_frame_png(media: &Media, secs: f64) -> Result<Vec<u8>> {
+    if media.format() != Format::Video {
+        return Err(Error::media("not a video"));
+    }
+    let img = ffmpeg::decode_frame(&media.path, Some(secs.max(0.0)), 8192)?;
+    let mut out = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(flatten(&img)).write_to(&mut out, image::ImageFormat::Png)?;
+    Ok(out.into_inner())
+}
+
 /// Generate the grid thumbnail.
 pub fn make_thumb(paths: &AppPaths, media: &Media) -> Result<()> {
     let img = match media.format() {
@@ -371,6 +436,44 @@ mod tests {
         let img = decode_jpeg_scaled(&src, 6, thumb_size).unwrap();
         // Shown as portrait 1600x3200; the 200x400 thumbnail only needs a 1/8-scale decode.
         assert_eq!((img.width(), img.height()), (200, 400));
+    }
+
+    #[test]
+    fn storyboard_layout() {
+        let mut m = Media::for_test(Path::new("v.mp4"), "video/mp4");
+        assert_eq!(Storyboard::of(&m), None); // length unknown
+        (m.width, m.height, m.duration_ms) = (Some(1080), Some(1920), Some(81_493));
+        let s = Storyboard::of(&m).unwrap();
+        assert_eq!((s.frames, s.cols, s.rows, s.tile_w, s.tile_h), (82, 10, 9, 134, 240));
+        assert!((s.interval - 81.493 / 82.0).abs() < 1e-9);
+        m.duration_ms = Some(3_600_000); // an hour: capped, one frame every 36 s
+        let s = Storyboard::of(&m).unwrap();
+        assert_eq!((s.frames, s.rows, s.interval), (100, 10, 36.0));
+        (m.width, m.height, m.duration_ms) = (Some(1920), Some(1080), Some(400));
+        let s = Storyboard::of(&m).unwrap();
+        assert_eq!((s.frames, s.cols, s.rows, s.tile_w, s.tile_h), (1, 1, 1, 240, 134));
+        assert_eq!(Storyboard::of(&Media::for_test(Path::new("p.jpg"), "image/jpeg")), None);
+    }
+
+    #[test]
+    fn storyboard_and_frame_of_a_video() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("clip.mp4");
+        ffmpeg::make_test_video(&src, &["-c:v", "libx264", "-g", "5"]);
+        let mut m = Media::for_test(&src, "video/mp4");
+        (m.width, m.height, m.duration_ms) = (Some(320), Some(240), Some(2000));
+        let paths = AppPaths::in_dir(&dir.path().join("data")).unwrap();
+
+        let (path, layout) = ensure_storyboard(&paths, &m).unwrap();
+        assert_eq!((layout.frames, layout.cols, layout.rows), (2, 2, 1));
+        let img = image::open(&path).unwrap();
+        assert_eq!((img.width(), img.height()), (480, 180));
+        // testsrc's picture moves, so the two tiles differ.
+        assert_ne!(img.crop_imm(0, 0, 240, 180).to_rgb8().into_raw(), img.crop_imm(240, 0, 240, 180).to_rgb8().into_raw());
+
+        let png = video_frame_png(&m, 1.2).unwrap();
+        let frame = image::load_from_memory_with_format(&png, image::ImageFormat::Png).unwrap();
+        assert_eq!((frame.width(), frame.height()), (320, 240));
     }
 
     #[test]

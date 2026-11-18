@@ -11,12 +11,14 @@ Think Google Photos, but everything stays on your PC.
 > (Memora never modifies your originals, but still), and please report bugs.
 
 ## Features
-- Index your existing folders in place. Nothing is moved, copied or uploaded.
+- Index your existing folders in place. Nothing is moved, copied or uploaded, and your photos are never changed.
 - Google Photos-style timeline, viewer, albums, favorites and trash
 - Search, map and places from photo GPS, all offline
 - Duplicate finder
 - HEIC/HEIF, camera RAW (CR2, CR3, NEF, ARW, DNG, RAF, ORF, RW2...) and common video formats; HDR videos are tone mapped for TVs
 - People and content search ("dog on a beach"), recognised on your PC
+- Your library goes with your photos: optionally keep favorites, albums, Archive, trash and people's names in a hidden `.memora` folder next to them, so another PC that adds the same folder (external drive, NAS or a synced folder) shows the same library and skips the slow indexing and recognition
+- Back up favorites, albums, Archive, trash and people's names to one file and restore them on a new install or another PC
 - **TV streaming**: shows up as a media server on smart TVs (DLNA/UPnP) and offers a `/tv` page for the TV browser
 
 ## Download

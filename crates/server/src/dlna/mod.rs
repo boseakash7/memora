@@ -73,7 +73,7 @@ fn append_request_log(line: &str) {
     use std::sync::{Mutex, OnceLock};
     static FILE: OnceLock<Option<Mutex<std::fs::File>>> = OnceLock::new();
     let file = FILE.get_or_init(|| {
-        let dir = photos_core::paths::AppPaths::from_env().ok()?.data_dir;
+        let dir = photos_core::paths::AppPaths::from_env().ok()?.ok()?.data_dir;
         std::fs::File::create(dir.join("dlna-requests.log")).ok().map(Mutex::new)
     });
     if let Some(Ok(mut f)) = file.as_ref().map(|f| f.lock()) {
@@ -215,12 +215,13 @@ async fn browse(s: &LanState, call: &soap::Call, urls: didl::Urls) -> Response {
     let start: u64 = call.arg("StartingIndex").parse().unwrap_or(0);
     let count: u64 = call.arg("RequestedCount").parse().unwrap_or(0);
     let count = if count == 0 { MAX_PAGE } else { count.min(MAX_PAGE) };
-    let root_title = s.cfg().device_name.clone();
+    let cfg = s.cfg();
+    let tree = didl::Tree { root_title: cfg.device_name.clone(), archive: cfg.archive };
     let db = s.app.library.db().clone();
 
     let result = blocking(move || match flag.as_str() {
-        "BrowseMetadata" => Ok(Some((vec![didl::metadata(&db, &id, &root_title)?], 1))),
-        "BrowseDirectChildren" => Ok(Some(didl::children(&db, &id, start, count, &root_title)?)),
+        "BrowseMetadata" => Ok(Some((vec![didl::metadata(&db, &id, &tree)?], 1))),
+        "BrowseDirectChildren" => Ok(Some(didl::children(&db, &id, start, count, &tree)?)),
         _ => Ok(None),
     })
     .await;

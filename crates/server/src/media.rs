@@ -26,6 +26,8 @@ pub fn routes() -> Router<AppState> {
         .route("/media/{id}/display", get(display))
         .route("/media/{id}/original", get(original))
         .route("/media/{id}/stream.mp4", get(stream_mp4))
+        .route("/media/{id}/storyboard", get(storyboard))
+        .route("/media/{id}/frame", get(frame))
 }
 
 /// Items for a grid. See `media::Query` for the filters (`scope`, `album`, `q`, `from`, ...).
@@ -122,6 +124,54 @@ async fn stream_mp4(
     }
     let start = q.t.filter(|t| t.is_finite() && *t > 0.0).unwrap_or(0.0);
     s.streams.start(m, photos_core::transcode::Container::Mp4, start, crate::lan::client_ip(&req)).await
+}
+
+/// Small frames of a video in one JPEG, for the viewer's seek-bar preview. Made on first
+/// request and cached. `X-Storyboard` gives the layout: `frames=82;interval=0.9938;cols=10;rows=9`
+/// (tile `i` shows the video at `i * interval` seconds).
+async fn storyboard(State(s): State<AppState>, Path(id): Path<i64>, req: Request) -> Result<Response, ApiError> {
+    let _slot = s.thumb_slots.acquire().await.map_err(|e| ApiError::Internal(e.to_string()))?;
+    let lib = s.library.clone();
+    let (path, layout) = blocking(move || {
+        let m = media::get(lib.db(), id)?;
+        thumbs::ensure_storyboard(lib.paths(), &m)
+    })
+    .await?;
+    let mut res = serve(path, Some("image/jpeg"), "private, max-age=31536000, immutable", req).await?;
+    let value = format!(
+        "frames={};interval={:.6};cols={};rows={}",
+        layout.frames, layout.interval, layout.cols, layout.rows
+    );
+    res.headers_mut()
+        .insert(STORYBOARD_HEADER, HeaderValue::from_str(&value).map_err(|e| ApiError::Internal(e.to_string()))?);
+    Ok(res)
+}
+
+pub(crate) const STORYBOARD_HEADER: &str = "x-storyboard";
+
+#[derive(serde::Deserialize)]
+struct FrameQuery {
+    /// Time in seconds.
+    t: f64,
+}
+
+/// The video frame at `?t=` seconds as a full-size PNG ("Copy this frame").
+async fn frame(
+    State(s): State<AppState>,
+    Path(id): Path<i64>,
+    Query(q): Query<FrameQuery>,
+) -> Result<Response, ApiError> {
+    let t = if q.t.is_finite() { q.t.max(0.0) } else { 0.0 };
+    let _slot = s.thumb_slots.acquire().await.map_err(|e| ApiError::Internal(e.to_string()))?;
+    let png = blocking(move || {
+        let m = media::get(s.library.db(), id)?;
+        thumbs::video_frame_png(&m, t)
+    })
+    .await?;
+    let mut res = Response::new(Body::from(png));
+    res.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
+    res.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(res)
 }
 
 pub(crate) async fn serve(path: PathBuf, mime: Option<&str>, cache: &str, req: Request) -> Result<Response, ApiError> {

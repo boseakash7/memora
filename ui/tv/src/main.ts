@@ -30,6 +30,8 @@ type Home = {
   videos: Item[]
   albums: Album[]
   places: Place[]
+  /** Absent while the Archive isn't shared. */
+  archive?: Item[]
   transcode: boolean
 }
 type Details = {
@@ -44,7 +46,7 @@ type Details = {
   canConvert: boolean
 }
 type Hello = { name: string; pinRequired: boolean; authorized: boolean }
-type ListSpec = { scope: 'all' | 'favorites' | 'videos' | 'album' | 'place'; id?: number; title: string }
+type ListSpec = { scope: 'all' | 'favorites' | 'videos' | 'album' | 'place' | 'archive'; id?: number; title: string }
 
 const app = document.getElementById('app') as HTMLElement
 
@@ -407,6 +409,8 @@ async function homeScreen(): Promise<Screen> {
   const all: ListSpec = { scope: 'all', title: 'All photos and videos' }
   const favorites: ListSpec = { scope: 'favorites', title: 'Favorites' }
   const videos: ListSpec = { scope: 'videos', title: 'Videos' }
+  const archive: ListSpec = { scope: 'archive', title: 'Archive' }
+  const archived = home.archive || []
 
   const row = (title: string, tiles: HTMLElement[]) =>
     tiles.length ? h('section', { className: 'row' }, h('h2', null, title), h('div', { className: 'row-items' }, ...tiles)) : null
@@ -442,6 +446,10 @@ async function homeScreen(): Promise<Screen> {
     row(
       'Videos',
       home.videos.length ? [moreTile('See all', () => openList(videos))].concat(home.videos.map((i) => itemTile(i, () => openViewer(videos, i.id)))) : [],
+    ),
+    row(
+      'Archive',
+      archived.length ? [moreTile('See all', () => openList(archive))].concat(archived.map((i) => itemTile(i, () => openViewer(archive, i.id)))) : [],
     ),
   )
   return { el }

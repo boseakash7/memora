@@ -1,12 +1,12 @@
 //! Groupings for browsing the library as a tree (the DLNA server): years, months and the
-//! folders on disk. Only visible items count (indexed, not missing, not in the trash).
+//! folders on disk. Only visible items count (indexed, not missing, trashed or archived).
 
 use r2d2_sqlite::rusqlite::params;
 
 use crate::db::Db;
 use crate::{Result, folders};
 
-const VISIBLE: &str = "missing = 0 AND trashed_at IS NULL AND stage >= 1";
+use crate::media::VISIBLE;
 
 /// A year (`2024`) or month (`2024-03`) with its item count and newest item.
 #[derive(Debug, Clone, PartialEq)]
@@ -21,7 +21,7 @@ fn periods(db: &Db, len: usize, prefix: &str) -> Result<Vec<Period>> {
     // SQLite returns `id` from the row that has max(taken_at): the newest item.
     let mut stmt = conn.prepare_cached(&format!(
         "SELECT substr(taken_at, 1, ?1) AS k, count(*), id, max(taken_at) FROM media
-         WHERE {VISIBLE} AND taken_at LIKE ?2 || '%'
+         WHERE {VISIBLE} AND stage >= 1 AND taken_at LIKE ?2 || '%'
          GROUP BY k ORDER BY k DESC"
     ))?;
     let rows = stmt.query_map(params![len as i64, prefix], |r| {
@@ -65,7 +65,7 @@ pub fn folder(db: &Db, folder_id: i64, rel: &str) -> Result<Listing> {
     let conn = db.conn()?;
     let mut stmt = conn.prepare_cached(&format!(
         "SELECT id, path FROM media
-         WHERE folder_id = ?1 AND {VISIBLE} AND substr(replace(path, '/', '\\'), 1, ?2) = ?3 COLLATE NOCASE"
+         WHERE folder_id = ?1 AND {VISIBLE} AND stage >= 1 AND substr(replace(path, '/', '\\'), 1, ?2) = ?3 COLLATE NOCASE"
     ))?;
     let rows = stmt.query_map(params![folder_id, prefix.chars().count() as i64, prefix], |r| {
         Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))

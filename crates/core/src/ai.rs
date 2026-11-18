@@ -9,6 +9,10 @@ use crate::people::{AUTO, FACE_DIM, to_blob};
 use crate::semantic::{self, CLIP_DIM};
 use crate::Result;
 
+/// Which models made the stored faces and CLIP vectors (`photos-ml` checks it matches its
+/// model files). Index snapshots from PCs with other models don't bring their faces.
+pub const RECOGNITION: &str = "yunet-2023mar/sface-2021dec/clip-vit-base-patch32-quantized";
+
 /// A face found in a picture.
 #[derive(Debug, Clone)]
 pub struct FoundFace {
@@ -46,7 +50,7 @@ pub fn next_batch(db: &Db, limit: usize) -> Result<Vec<Media>> {
     Ok(items.collect::<std::result::Result<_, _>>()?)
 }
 
-fn iou(a: [f32; 4], b: [f32; 4]) -> f32 {
+pub(crate) fn iou(a: [f32; 4], b: [f32; 4]) -> f32 {
     let w = (a[0] + a[2]).min(b[0] + b[2]) - a[0].max(b[0]);
     let h = (a[1] + a[3]).min(b[1] + b[3]) - a[1].max(b[1]);
     if w <= 0.0 || h <= 0.0 {
@@ -96,6 +100,10 @@ pub fn save(db: &Db, m: &Media, found: &Found) -> Result<Option<Saved>> {
         .execute(params![m.id, x, y, w, h, face.score, to_blob(&face.embedding), person, locked])?;
         saved.face_ids.push(tx.last_insert_rowid());
     }
+    // Names and corrections made on other PCs for this item (see `sync`).
+    crate::sync::apply_faces_for(&tx, m.id)?;
+    // ...and those of a restored backup.
+    crate::backup::apply_waiting_faces(&tx, m.id)?;
     match &found.clip {
         Some(v) if v.len() == CLIP_DIM => semantic::save(&tx, m.id, v)?,
         _ => {

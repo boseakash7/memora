@@ -337,7 +337,7 @@ fn apply(db: &Db, folder_id: i64, ops: &[Op], stats: &mut ScanStats) -> Result<(
                 }
                 Op::Reset { id, size, mtime } => {
                     tx.prepare_cached(
-                        "UPDATE media SET size = ?2, mtime = ?3, missing = 0, stage = ?4, error = NULL WHERE id = ?1",
+                        "UPDATE media SET size = ?2, mtime = ?3, missing = 0, stage = ?4, error = NULL, imported = 0 WHERE id = ?1",
                     )?
                     .execute(params![id, size, mtime, Stage::NEW])?;
                     stats.changed += 1;

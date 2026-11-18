@@ -6,7 +6,8 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 
 export const inTauri = isTauri()
 
-export const appWindow = $state({ maximized: false, focused: true })
+/** `fullscreen`: the viewer filled the screen (window buttons hidden). */
+export const appWindow = $state({ maximized: false, focused: true, fullscreen: false })
 
 if (inTauri) {
   const w = getCurrentWindow()
@@ -23,6 +24,27 @@ if (inTauri) {
   w.onFocusChanged(({ payload }) => (appWindow.focused = payload))
   document.documentElement.classList.add('custom-titlebar')
 }
+
+/** Fills the screen with the window (Tauri) or the page (dev browser), or goes back. */
+export async function setFullscreen(on: boolean) {
+  if (on === appWindow.fullscreen) return
+  try {
+    if (inTauri) await getCurrentWindow().setFullscreen(on)
+    else if (on) await document.documentElement.requestFullscreen()
+    else if (document.fullscreenElement) await document.exitFullscreen()
+    markFullscreen(on)
+  } catch {
+    // Not allowed (some browsers); stay as we are.
+  }
+}
+
+function markFullscreen(on: boolean) {
+  appWindow.fullscreen = on
+  document.documentElement.classList.toggle('fullscreen', on)
+}
+
+// The dev browser leaves full screen by itself on Esc.
+if (!inTauri) document.addEventListener('fullscreenchange', () => markFullscreen(!!document.fullscreenElement))
 
 export function minimizeWindow() {
   getCurrentWindow().minimize()

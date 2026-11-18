@@ -22,7 +22,7 @@ use crate::media::{MEDIA_COLUMNS, Media, Stage};
 use crate::metadata::{self, DATE_FORMAT, Metadata};
 use crate::scan::{self, Change};
 use crate::places::{self, PlaceName};
-use crate::{AppPaths, Result, hash, organize, semantic, thumbs};
+use crate::{AppPaths, Result, backup, hash, organize, semantic, snapshot, sync, thumbs};
 
 /// Indexing progress, pushed to the UI.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -35,6 +35,12 @@ pub struct Status {
     pub scanned_files: u64,
     /// Items still waiting for metadata or thumbnails.
     pub pending: u64,
+    /// Of those, items at each step: indexing works through the whole library one step at
+    /// a time (all details first, so the grid fills quickly), so `pending` only falls in
+    /// the last step. Details to read, thumbnails to make, hashes and places to find.
+    pub to_read: u64,
+    pub to_thumbnail: u64,
+    pub to_hash: u64,
     /// Items in the timeline.
     pub total: u64,
     /// Of those: photos, videos, and their size on disk in bytes.
@@ -78,7 +84,16 @@ struct Inner {
     watched: Mutex<HashSet<PathBuf>>,
     stop: AtomicBool,
     semantic: semantic::Index,
+    /// Work for the library-info thread (`SYNC_*` bits), see [`crate::sync`].
+    sync_work: (Mutex<u8>, Condvar),
 }
+
+const SYNC_FLUSH: u8 = 1;
+const SYNC_READ: u8 = 2;
+const SYNC_APPLY: u8 = 4;
+/// How often index snapshots are brought up to date (see [`crate::snapshot`]).
+const SNAPSHOT_SETTLED: Duration = Duration::from_secs(5 * 60);
+const SNAPSHOT_BUSY: Duration = Duration::from_secs(30 * 60);
 
 /// Pending items read from the database at a time.
 const FETCH: usize = 128;
@@ -103,6 +118,7 @@ impl Library {
             watched: Mutex::new(HashSet::new()),
             stop: AtomicBool::new(false),
             semantic: semantic::Index::default(),
+            sync_work: (Mutex::new(SYNC_READ | SYNC_APPLY), Condvar::new()),
         });
 
         let weak = Arc::downgrade(&inner);
@@ -124,6 +140,11 @@ impl Library {
         std::thread::Builder::new()
             .name("library-trash".into())
             .spawn(move || trash_inner.purge_loop())?;
+
+        let sync_inner = inner.clone();
+        std::thread::Builder::new()
+            .name("library-sync".into())
+            .spawn(move || sync_inner.sync_loop())?;
 
         let dates_inner = inner.clone();
         std::thread::Builder::new()
@@ -151,6 +172,7 @@ impl Library {
     /// Recognition made progress: update the counts (throttled). `changed` also tells open
     /// lists to reload, e.g. when new people appeared.
     pub fn report_ai(&self, changed: bool) {
+        self.inner.kick_sync(SYNC_APPLY);
         if changed {
             self.inner.status.lock().unwrap().revision += 1;
         }
@@ -172,11 +194,110 @@ impl Library {
         self.inner.listeners.lock().unwrap().push(Box::new(f));
     }
 
-    pub fn add_folder(&self, path: &Path) -> Result<Folder> {
-        let folder = folders::add(&self.inner.db, path)?;
+    /// Add a folder. With `keep_info`, its library info is also kept in a `.memora` folder
+    /// inside it (or read from one that is there already), see [`crate::sync`].
+    pub fn add_folder(&self, path: &Path, keep_info: bool) -> Result<Folder> {
+        let folder = folders::add_with(&self.inner.db, path, keep_info)?;
+        if keep_info {
+            self.inner.kick_sync(SYNC_READ | SYNC_FLUSH);
+        }
         self.inner.watch(&folder.path);
         self.inner.queue(Job::Folder(folder.id));
         Ok(folder)
+    }
+
+    /// The folder moved (or its drive letter changed): point it at `path` and look it over
+    /// again. Items keep their ids, so favorites, albums, people and thumbnails stay.
+    pub fn locate_folder(&self, id: i64, path: &Path) -> Result<Folder> {
+        let old = folders::get(&self.inner.db, id)?;
+        folders::relocate(&self.inner.db, id, path)?;
+        sync::relocated(&self.inner.db, id)?;
+        let folder = folders::get(&self.inner.db, id)?;
+        self.inner.kick_sync(SYNC_FLUSH | SYNC_READ);
+        self.inner.unwatch(&old.path);
+        self.inner.watch(&folder.path);
+        self.inner.queue(Job::Folder(folder.id));
+        self.notify_changed();
+        Ok(folder)
+    }
+
+    /// Start or stop keeping a folder's library info in `.memora`.
+    pub fn set_keep_info(&self, id: i64, keep: bool) -> Result<Folder> {
+        let folder = if keep { sync::enable(&self.inner.db, id)? } else { sync::disable(&self.inner.db, id)? };
+        self.inner.kick_sync(SYNC_FLUSH | SYNC_READ | SYNC_APPLY);
+        Ok(folder)
+    }
+
+    /// Keep the finished index in the folder's `.memora` too (on by default), or stop and
+    /// delete this PC's copy there.
+    pub fn set_keep_index(&self, id: i64, keep: bool) -> Result<Folder> {
+        let db = &self.inner.db;
+        db.conn()?.execute("UPDATE folders SET keep_index = ?2 WHERE id = ?1", r2d2_sqlite::rusqlite::params![id, keep])?;
+        let folder = folders::get(db, id)?;
+        if keep {
+            snapshot::write_changed(db)?;
+        } else {
+            snapshot::remove_own(db, &folder)?;
+        }
+        Ok(folder)
+    }
+
+    /// Stop syncing and move the folder's `.memora` to the Recycle Bin.
+    pub fn remove_folder_info(&self, id: i64) -> Result<Folder> {
+        sync::remove_info(&self.inner.db, id)
+    }
+
+    /// Write everything the user made (favorites, albums, people names...) to one file.
+    pub fn write_backup(&self, path: &Path) -> Result<backup::Summary> {
+        backup::write(&self.inner.db, path)
+    }
+
+    /// Restore a backup file. Its folders that are not in the library but exist on this PC
+    /// are added (and listed right away, so their items can be found); then everything in it
+    /// is added to the library. With `with_settings`, settings are restored too.
+    pub fn restore_backup(&self, path: &Path, with_settings: bool) -> Result<backup::Restored> {
+        let saved = backup::read(path)?;
+        let db = &self.inner.db;
+        let mut added = Vec::new();
+        for f in saved.folders.iter().filter(|f| f.path.is_dir()) {
+            let folder = match folders::add_with(db, &f.path, f.keep_info) {
+                Ok(folder) => folder,
+                Err(crate::Error::FolderExists(_)) => continue,
+                Err(e) => return Err(e),
+            };
+            if !f.keep_index {
+                db.conn()?.execute("UPDATE folders SET keep_index = 0 WHERE id = ?1", [folder.id])?;
+            }
+            let folder = folders::get(db, folder.id)?;
+            scan::scan_folder(db, &folder, &mut |_| {})?;
+            if folder.sync && folder.keep_index {
+                snapshot::import(db, folder.id)?;
+            }
+            added.push(folder);
+        }
+        let mut report = backup::restore(db, &saved, with_settings)?;
+        report.folders_added = added.len();
+        for folder in &added {
+            self.inner.watch(&folder.path);
+            self.inner.queue(Job::Folder(folder.id));
+        }
+        self.inner.semantic.reset();
+        self.inner.wake();
+        self.notify_changed();
+        Ok(report)
+    }
+
+    /// Write pending library info and read other PCs' changes now, then apply them.
+    /// Returns true if the library changed.
+    pub fn sync_now(&self) -> Result<bool> {
+        sync::flush(&self.inner.db)?;
+        sync::read(&self.inner.db)?;
+        let changed = sync::apply(&self.inner.db)?;
+        snapshot::write_changed(&self.inner.db)?;
+        if changed {
+            self.notify_changed();
+        }
+        Ok(changed)
     }
 
     /// Forget a folder and everything indexed in it. Files on disk are not touched.
@@ -198,6 +319,7 @@ impl Library {
 
     /// Tell the UI that items changed (favorites, trash, albums...) so it reloads its lists.
     pub fn notify_changed(&self) {
+        self.inner.kick_sync(SYNC_FLUSH);
         self.inner.status.lock().unwrap().revision += 1;
         self.inner.refresh_counts();
         self.inner.emit(true);
@@ -215,6 +337,7 @@ impl Library {
             w.stop_nonblocking();
         }
         self.inner.wake();
+        self.inner.kick_sync(0);
         // Unblock the scan thread's recv().
         let _ = self.inner.jobs.send(Job::Changes(Vec::new()));
     }
@@ -262,6 +385,64 @@ impl Inner {
         }
     }
 
+    fn kick_sync(&self, work: u8) {
+        let (lock, cvar) = &self.sync_work;
+        *lock.lock().unwrap() |= work;
+        cvar.notify_one();
+    }
+
+    /// Keep `.memora` folders and the library in step: write this PC's changes soon after
+    /// they are made, read other PCs' changes when their logs change (the folder watcher
+    /// sees them) or every half minute (network drives may not report changes).
+    fn sync_loop(&self) {
+        const POLL: Duration = Duration::from_secs(30);
+        if let Err(e) = sync::compact(&self.db) {
+            tracing::warn!("cannot compact library info: {e}");
+        }
+        let mut last_read = Instant::now();
+        // The first look at index snapshots comes a minute after starting.
+        let mut last_snapshot = Instant::now().checked_sub(SNAPSHOT_SETTLED - Duration::from_secs(60)).unwrap_or_else(Instant::now);
+        while !self.stop.load(Ordering::SeqCst) {
+            let work = {
+                let (lock, cvar) = &self.sync_work;
+                let mut work = lock.lock().unwrap();
+                if *work == 0 {
+                    work = cvar.wait_timeout(work, Duration::from_secs(2)).unwrap().0;
+                }
+                std::mem::take(&mut *work)
+            };
+            if self.stop.load(Ordering::SeqCst) {
+                break;
+            }
+            let mut run = || -> Result<bool> {
+                sync::flush(&self.db)?;
+                let mut apply = work & SYNC_APPLY != 0;
+                if work & SYNC_READ != 0 || last_read.elapsed() >= POLL {
+                    last_read = Instant::now();
+                    apply |= sync::read(&self.db)?;
+                }
+                let changed = apply && sync::apply(&self.db)?;
+                // Index snapshots: soon after indexing and recognition settle, and now and
+                // then while recognition is still going (it can take hours).
+                let every = if self.status.lock().unwrap().ai_pending == 0 { SNAPSHOT_SETTLED } else { SNAPSHOT_BUSY };
+                if last_snapshot.elapsed() >= every {
+                    last_snapshot = Instant::now();
+                    snapshot::write_changed(&self.db)?;
+                }
+                Ok(changed)
+            };
+            match run() {
+                Ok(true) => {
+                    self.status.lock().unwrap().revision += 1;
+                    self.refresh_counts();
+                    self.emit(true);
+                }
+                Ok(false) => {}
+                Err(e) => tracing::warn!("library info sync: {e}"),
+            }
+        }
+    }
+
     fn wake(&self) {
         let (lock, cvar) = &self.wake;
         *lock.lock().unwrap() = true;
@@ -271,24 +452,30 @@ impl Inner {
     fn refresh_counts(&self) {
         let counts = self.db.conn().and_then(|c| {
             Ok(c.query_row(
-                "SELECT count(*) FILTER (WHERE stage >= ?1 AND trashed_at IS NULL),
+                "SELECT count(*) FILTER (WHERE stage >= ?1 AND trashed_at IS NULL AND archived_at IS NULL),
                         count(*) FILTER (WHERE stage < ?2),
                         count(*) FILTER (WHERE error IS NOT NULL),
                         count(*) FILTER (WHERE stage = ?3),
-                        count(*) FILTER (WHERE stage >= ?1 AND trashed_at IS NULL AND kind = 'photo'),
-                        count(*) FILTER (WHERE stage >= ?1 AND trashed_at IS NULL AND kind = 'video'),
-                        coalesce(sum(size) FILTER (WHERE stage >= ?1 AND trashed_at IS NULL), 0)
+                        count(*) FILTER (WHERE stage >= ?1 AND trashed_at IS NULL AND archived_at IS NULL AND kind = 'photo'),
+                        count(*) FILTER (WHERE stage >= ?1 AND trashed_at IS NULL AND archived_at IS NULL AND kind = 'video'),
+                        coalesce(sum(size) FILTER (WHERE stage >= ?1 AND trashed_at IS NULL AND archived_at IS NULL), 0),
+                        count(*) FILTER (WHERE stage = ?4),
+                        count(*) FILTER (WHERE stage = ?1),
+                        count(*) FILTER (WHERE stage = ?5)
                  FROM media WHERE missing = 0",
-                [Stage::METADATA, Stage::DONE, Stage::HASH],
+                [Stage::METADATA, Stage::DONE, Stage::HASH, Stage::NEW, Stage::THUMBNAIL],
                 |r| {
                     let n = |i| r.get::<_, i64>(i).map(|n| n as u64);
-                    Ok(([n(0)?, n(1)?, n(2)?, n(3)?], [n(4)?, n(5)?, n(6)?]))
+                    Ok(([n(0)?, n(1)?, n(2)?, n(3)?], [n(4)?, n(5)?, n(6)?], [n(7)?, n(8)?, n(9)?]))
                 },
             )?)
         });
         match counts {
-            Ok(([total, pending, errors, ai_pending], [photos, videos, bytes])) => {
+            Ok(([total, pending, errors, ai_pending], [photos, videos, bytes], [to_read, to_thumbnail, to_hash])) => {
                 let mut s = self.status.lock().unwrap();
+                s.to_read = to_read;
+                s.to_thumbnail = to_thumbnail;
+                s.to_hash = to_hash;
                 s.total = total;
                 s.photos = photos;
                 s.videos = videos;
@@ -407,14 +594,18 @@ impl Inner {
             if let Err(e) = self.run_job(job) {
                 tracing::error!("library scan failed: {e}");
             }
+            // Counts first: the moment scanning ends, `pending` must already include what
+            // the scan found, or the library looks idle with work still to do.
+            self.refresh_counts();
             if self.queued.fetch_sub(1, Ordering::SeqCst) == 1 {
                 let mut s = self.status.lock().unwrap();
                 s.scanning = false;
                 s.scan_folder = None;
                 s.scanned_files = 0;
             }
-            self.refresh_counts();
             self.wake();
+            // Newly found items may be the ones other PCs' changes are about.
+            self.kick_sync(SYNC_APPLY);
             self.emit(true);
         }
     }
@@ -463,6 +654,14 @@ impl Inner {
             self.emit(false);
         })?;
         tracing::info!("scanned {} in {:.1?}: {stats:?}", folder.path.display(), started.elapsed());
+        if stats.added + stats.changed > 0 && folder.sync && folder.keep_index {
+            // Other PCs may have indexed these files already (see `snapshot`).
+            match snapshot::import(&self.db, folder.id) {
+                Ok(n) if n.recognised > 0 => self.semantic.reset(),
+                Ok(_) => {}
+                Err(e) => tracing::warn!("cannot use the index in {}: {e}", folder.path.display()),
+            }
+        }
         if stats.added + stats.changed > 0 {
             self.wake();
         }
@@ -522,6 +721,8 @@ impl Inner {
 
             if in_flight.is_empty() {
                 if self.processing.swap(false, Ordering::SeqCst) {
+                    // Hashes let other PCs' changes find renamed files.
+                    self.kick_sync(SYNC_APPLY);
                     // Places and hashes arrived while working; let open lists pick them up.
                     self.status.lock().unwrap().revision += 1;
                     self.refresh_counts();
@@ -634,9 +835,13 @@ impl Inner {
                     )?
                     .execute(params![m.id, m.stage, e.to_string(), m.mtime])?
                 }
+                // Items whose hashes (and maybe faces) came from an index snapshot are done.
                 Outcome::Thumbnail(Ok(())) => tx
-                    .prepare_cached("UPDATE media SET stage = ?3 WHERE id = ?1 AND stage = ?2 AND mtime = ?4")?
-                    .execute(params![m.id, m.stage, Stage::THUMBNAIL, m.mtime])?,
+                    .prepare_cached(
+                        "UPDATE media SET stage = CASE imported WHEN 2 THEN ?5 WHEN 1 THEN ?6 ELSE ?3 END
+                         WHERE id = ?1 AND stage = ?2 AND mtime = ?4",
+                    )?
+                    .execute(params![m.id, m.stage, Stage::THUMBNAIL, m.mtime, Stage::AI, Stage::HASH])?,
             };
             visible |= n > 0 && m.stage == Stage::NEW;
         }
@@ -705,6 +910,10 @@ fn on_fs_events(inner: &Weak<Inner>, res: DebounceEventResult) {
                     rescan = true;
                     continue;
                 }
+                if ev.paths.iter().any(|p| sync::is_info_path(p)) {
+                    inner.kick_sync(SYNC_READ);
+                    continue;
+                }
                 let paths = &ev.paths;
                 let mut push = |c: Change| {
                     if changes.last() != Some(&c) {
@@ -767,7 +976,7 @@ mod tests {
         }
 
         let lib = start(dir.path());
-        lib.add_folder(&root).unwrap();
+        lib.add_folder(&root, false).unwrap();
         assert!(lib.wait_idle(Duration::from_secs(60)), "indexing finished");
 
         let items = media::timeline(lib.db()).unwrap();
@@ -844,7 +1053,7 @@ mod tests {
         metadata::test_jpeg_with_exif(&root.join("bengaluru.jpg"), 80, 60);
 
         let lib = start(dir.path());
-        lib.add_folder(&root).unwrap();
+        lib.add_folder(&root, false).unwrap();
         assert!(lib.wait_idle(Duration::from_secs(60)));
 
         // Every item went through the hash stage.
@@ -895,7 +1104,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let lib = start(dir.path());
         let started = Instant::now();
-        lib.add_folder(&root).unwrap();
+        lib.add_folder(&root, false).unwrap();
         let count_below = |stage: i64| -> i64 {
             lib.db()
                 .conn()
@@ -932,7 +1141,7 @@ mod tests {
         let root = dir.path().join("Photos");
         std::fs::create_dir_all(&root).unwrap();
         let lib = start(dir.path());
-        let folder = lib.add_folder(&root).unwrap();
+        let folder = lib.add_folder(&root, false).unwrap();
         assert!(lib.wait_idle(Duration::from_secs(20)));
 
         image::RgbImage::new(10, 10).save(folder.path.join("new.png")).unwrap();

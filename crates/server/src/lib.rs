@@ -69,7 +69,8 @@ pub fn router(state: AppState) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::list(UI_ORIGINS.iter().map(|o| HeaderValue::from_static(o))))
         .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::PUT, Method::DELETE])
-        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE, HeaderName::from_static("range")]);
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE, HeaderName::from_static("range")])
+        .expose_headers([HeaderName::from_static(media::STORYBOARD_HEADER)]);
 
     Router::new()
         .nest("/api", api::routes(state.clone()))

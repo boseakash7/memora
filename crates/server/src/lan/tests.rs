@@ -1,4 +1,4 @@
-//! The network listener: read-only, host check, PIN, trash hidden, DLNA browsing and media.
+//! The network listener: read-only, host check, PIN, trash hidden, Archive, DLNA browsing and media.
 
 use std::process::Command;
 use std::sync::{Arc, RwLock};
@@ -34,6 +34,7 @@ fn config() -> LanConfig {
         port: 8200,
         tv_page: true,
         dlna: true,
+        archive: true,
         device_name: "Test PC".into(),
         pin: None,
         transcode: true,
@@ -60,7 +61,7 @@ async fn net() -> Net {
     let paths = photos_core::AppPaths::in_dir(&dir.path().join("data")).unwrap();
     let db = photos_core::Db::open(&paths.db_path).unwrap();
     let library = Library::start(db, paths).unwrap();
-    library.add_folder(&photos).unwrap();
+    library.add_folder(&photos, false).unwrap();
     let lib = library.clone();
     assert!(tokio::task::spawn_blocking(move || lib.wait_idle(Duration::from_secs(60))).await.unwrap());
 
@@ -208,6 +209,55 @@ async fn tv_page_pin_and_trash() {
     let (_, all) = n.json("/tv/api/items?scope=all", &[]).await;
     assert!(all.as_array().unwrap().iter().all(|i| i["id"] != sunset));
     assert_eq!(n.json("/tv/api/items?scope=trash", &[]).await.0, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn archive_row_and_folder() {
+    let n = net().await;
+    let sunset = n.id_of("sunset.jpg");
+    let (_, root) = n.browse("0", "BrowseDirectChildren", 0, 0).await;
+    assert_eq!(tag(&root, "TotalMatches"), "7", "no Archive folder while it is empty");
+    let (_, home) = n.json("/tv/api/home", &[]).await;
+    assert_eq!(home["archive"], json!([]));
+
+    photos_core::organize::archive(n.library.db(), &[sunset]).unwrap();
+    let in_list = |v: &Value| v.as_array().unwrap().iter().any(|i| i["id"] == sunset);
+
+    // Only in the Archive row/folder.
+    let (_, home) = n.json("/tv/api/home", &[]).await;
+    assert!(in_list(&home["archive"]));
+    assert!(!in_list(&home["recent"]));
+    let expected = if n.video { 2 } else { 1 };
+    assert_eq!(home["total"], expected);
+    let (status, archived) = n.json("/tv/api/items?scope=archive", &[]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(in_list(&archived));
+    assert!(!in_list(&n.json("/tv/api/items?scope=all", &[]).await.1));
+    assert_eq!(n.json(&format!("/tv/api/media/{sunset}"), &[]).await.0, StatusCode::OK, "opens from the Archive row");
+
+    let (_, root) = n.browse("0", "BrowseDirectChildren", 0, 0).await;
+    assert_eq!(tag(&root, "TotalMatches"), "8");
+    assert!(didl(&root).contains("<dc:title>Archive</dc:title>"));
+    let (_, folder) = n.browse("r", "BrowseDirectChildren", 0, 0).await;
+    assert_eq!(tag(&folder, "TotalMatches"), "1");
+    assert!(didl(&folder).contains("<dc:title>sunset.jpg</dc:title>"));
+    assert_eq!(n.browse(&format!("r|{sunset}"), "BrowseMetadata", 0, 0).await.0, StatusCode::OK);
+    assert_eq!(n.browse(&format!("t|{sunset}"), "BrowseMetadata", 0, 0).await.0, StatusCode::INTERNAL_SERVER_ERROR);
+    let (_, folders) = n.browse("d", "BrowseDirectChildren", 0, 0).await;
+    let folder_id = didl(&folders).split("container id=\"").nth(1).unwrap().split('"').next().unwrap().to_owned();
+    assert!(!didl(&n.browse(&folder_id, "BrowseDirectChildren", 0, 0).await.1).contains("sunset.jpg"));
+    assert_eq!(n.get(&format!("/dlna/m/{sunset}/photo.jpg")).await.0, StatusCode::OK);
+
+    // Switched off: gone from both, by id too.
+    *n.cfg.write().unwrap() = Arc::new(LanConfig { archive: false, ..config() });
+    let (_, home) = n.json("/tv/api/home", &[]).await;
+    assert!(home.get("archive").is_none());
+    assert_eq!(n.json("/tv/api/items?scope=archive", &[]).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(n.json(&format!("/tv/api/media/{sunset}"), &[]).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(n.get(&format!("/dlna/m/{sunset}/photo.jpg")).await.0, StatusCode::NOT_FOUND);
+    let (_, root) = n.browse("0", "BrowseDirectChildren", 0, 0).await;
+    assert_eq!(tag(&root, "TotalMatches"), "7");
+    assert_eq!(n.browse("r", "BrowseDirectChildren", 0, 0).await.0, StatusCode::INTERNAL_SERVER_ERROR);
 }
 
 #[tokio::test]

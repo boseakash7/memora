@@ -153,11 +153,20 @@ pub struct Media {
     pub video_codec: Option<String>,
     pub audio_codec: Option<String>,
     pub trashed: bool,
+    /// In the Archive: shown only on the Archive page (and the TV/DLNA Archive).
+    pub archived: bool,
 }
+
+/// The condition for items that the everyday lists show: on disk, not in the trash and
+/// not archived. Every query that lists items uses this (or [`VISIBLE_M`]), so an archived
+/// item can't leak into one list by accident. Items also need `stage >= METADATA`.
+pub(crate) const VISIBLE: &str = "missing = 0 AND trashed_at IS NULL AND archived_at IS NULL";
+/// [`VISIBLE`] for a query where the media table is `m`.
+pub(crate) const VISIBLE_M: &str = "m.missing = 0 AND m.trashed_at IS NULL AND m.archived_at IS NULL";
 
 pub(crate) const MEDIA_COLUMNS: &str = "id, folder_id, path, name, size, mtime, kind, mime, width, height, \
      duration_ms, orientation, taken_at, tz_offset, camera_make, camera_model, lat, lon, favorite, \
-     missing, stage, error, video_codec, audio_codec, trashed_at IS NOT NULL";
+     missing, stage, error, video_codec, audio_codec, trashed_at IS NOT NULL, archived_at IS NOT NULL";
 
 impl Media {
     pub(crate) fn from_row(r: &Row) -> r2d2_sqlite::rusqlite::Result<Self> {
@@ -187,6 +196,7 @@ impl Media {
             video_codec: r.get(22)?,
             audio_codec: r.get(23)?,
             trashed: r.get(24)?,
+            archived: r.get(25)?,
         })
     }
 
@@ -224,6 +234,7 @@ impl Media {
             video_codec: None,
             audio_codec: None,
             trashed: false,
+            archived: false,
         }
     }
 }
@@ -295,12 +306,15 @@ pub struct TimelineItem {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Scope {
-    /// Everything that is not in the trash.
+    /// Everything that is not in the trash or the archive.
     #[default]
     All,
     Favorites,
     /// Needs `Query::album`.
     Album,
+    /// Archived items (not those in the trash).
+    Archive,
+    /// Trashed items, archived or not.
     Trash,
 }
 
@@ -372,12 +386,12 @@ fn filter(db: &Db, q: &Query) -> Result<(String, Vec<Value>)> {
 
     clauses.push(
         match q.scope {
-            Scope::All => "trashed_at IS NULL",
-            Scope::Favorites => "trashed_at IS NULL AND favorite = 1",
-            Scope::Trash => "trashed_at IS NOT NULL",
-            Scope::Album => "trashed_at IS NULL AND id IN (SELECT media_id FROM album_items WHERE album_id = ?)",
-        }
-        .to_owned(),
+            Scope::All => VISIBLE.to_owned(),
+            Scope::Favorites => format!("{VISIBLE} AND favorite = 1"),
+            Scope::Album => format!("{VISIBLE} AND id IN (SELECT media_id FROM album_items WHERE album_id = ?)"),
+            Scope::Archive => "trashed_at IS NULL AND archived_at IS NOT NULL".to_owned(),
+            Scope::Trash => "trashed_at IS NOT NULL".to_owned(),
+        },
     );
     if q.scope == Scope::Album {
         let album = q.album.ok_or_else(|| Error::invalid("an album id is required"))?;
@@ -494,10 +508,11 @@ pub fn page(db: &Db, q: &Query, offset: u64, limit: u64) -> Result<(Vec<Media>, 
     Ok((items, total))
 }
 
-/// An item that may be shown to others (TV, network): indexed, not missing and not in the trash.
-pub fn get_visible(db: &Db, id: i64) -> Result<Media> {
+/// An item that may be shown to others (TV, network): indexed, not missing and not in the
+/// trash. Archived items only when `archive` is shared too.
+pub fn get_visible(db: &Db, id: i64, archive: bool) -> Result<Media> {
     let m = get(db, id)?;
-    if m.trashed || m.missing || m.stage < Stage::METADATA {
+    if m.trashed || m.missing || m.stage < Stage::METADATA || (m.archived && !archive) {
         return Err(Error::NotFound);
     }
     Ok(m)
@@ -527,10 +542,10 @@ pub type MapPoint = (i64, f64, f64);
 /// Every visible item that has GPS coordinates.
 pub fn map_points(db: &Db) -> Result<Vec<MapPoint>> {
     let conn = db.conn()?;
-    let mut stmt = conn.prepare_cached(
+    let mut stmt = conn.prepare_cached(&format!(
         "SELECT id, lat, lon FROM media
-         WHERE missing = 0 AND trashed_at IS NULL AND stage >= ?1 AND lat IS NOT NULL AND lon IS NOT NULL",
-    )?;
+         WHERE {VISIBLE} AND stage >= ?1 AND lat IS NOT NULL AND lon IS NOT NULL"
+    ))?;
     let points = stmt
         .query_map([Stage::METADATA], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
         .collect::<std::result::Result<_, _>>()?;
@@ -547,7 +562,7 @@ pub fn cameras(db: &Db) -> Result<Vec<String>> {
     let conn = db.conn()?;
     let mut stmt = conn.prepare_cached(&format!(
         "SELECT DISTINCT {CAMERA_EXPR} AS cam FROM media
-         WHERE missing = 0 AND trashed_at IS NULL AND cam != '' ORDER BY cam COLLATE NOCASE"
+         WHERE {VISIBLE} AND cam != '' ORDER BY cam COLLATE NOCASE"
     ))?;
     Ok(stmt.query_map([], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?)
 }

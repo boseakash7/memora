@@ -14,6 +14,34 @@ export type Folder = {
   enabled: boolean
   addedAt: string
   available: boolean
+  /** Library info (favorites, albums, people…) is also kept in a hidden `.memora` folder. */
+  sync: boolean
+  /** The folder holding that `.memora`: this one or a parent. */
+  syncRoot: string | null
+  /** While keeping library info: the finished index too, so other PCs skip indexing. */
+  keepIndex: boolean
+  libraryInfo: LibraryInfo | null
+}
+
+/** How a folder's `.memora` is doing. */
+export type LibraryInfo = {
+  root: string
+  /** False when this PC can't write there (read-only, unplugged): changes wait on this PC. */
+  writable: boolean
+  /** Other PCs that keep their info there. */
+  otherPcs: string[]
+  /** Changes not written to the folder yet. */
+  unsent: number
+  /** Size of this PC's index snapshot there (null until written, or when not kept). */
+  indexBytes: number | null
+}
+
+/** What a folder holds before it is added. */
+export type FolderProbe = {
+  /** Folder with an existing `.memora` covering it (itself or a parent). */
+  root: string | null
+  /** PCs that wrote library info there. */
+  pcs: string[]
 }
 
 export type Theme = 'system' | 'light' | 'dark'
@@ -38,7 +66,7 @@ export type TimelineItem = {
 
 /** Which items a grid shows, and how they are filtered. */
 export type TimelineQuery = {
-  scope?: 'all' | 'favorites' | 'album' | 'trash'
+  scope?: 'all' | 'favorites' | 'album' | 'archive' | 'trash'
   album?: number
   /** Free text: words must match the start of words in file/folder names, cameras and album names. */
   q?: string
@@ -165,6 +193,9 @@ export type Media = {
   lon: number | null
   favorite: boolean
   missing: boolean
+  trashed: boolean
+  /** In the Archive: shown only on the Archive page. */
+  archived: boolean
   stage: number
   error: string | null
 }
@@ -195,6 +226,11 @@ export type LibraryStatus = {
   scanFolder: string | null
   scannedFiles: number
   pending: number
+  /** Of `pending`, items at each indexing step (the whole library goes through one step
+   * at a time, so `pending` only falls in the last one). */
+  toRead: number
+  toThumbnail: number
+  toHash: number
   total: number
   /** Of `total`: photos, videos, and their size on disk in bytes. */
   photos: number
@@ -215,6 +251,8 @@ export type Settings = {
   lanTvPage: boolean
   /** While sharing: the DLNA media server TVs list as a source (no PIN possible). */
   lanDlna: boolean
+  /** While sharing: an Archive row on the TV page and an Archive folder for DLNA. */
+  lanArchive: boolean
   tvPin: string | null
   transcodeVideos: boolean
   mlEnabled: boolean
@@ -271,11 +309,49 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   return (res.status === 204 ? undefined : await res.json()) as T
 }
 
+/** What a backup file holds. */
+export type BackupSummary = {
+  created: string
+  pc: string
+  folders: string[]
+  favorites: number
+  archived: number
+  trashed: number
+  albums: number
+  people: number
+}
+
+/** What restoring a backup did. */
+export type Restored = {
+  items: number
+  notFound: number
+  favorites: number
+  archived: number
+  trashed: number
+  albumsCreated: number
+  albumItems: number
+  peopleNamed: number
+  faces: number
+  facesWaiting: number
+  settings: boolean
+  foldersAdded: number
+}
+
 export const api = {
   folders: {
     list: () => request<Folder[]>('GET', '/folders'),
-    add: (path: string) => request<Folder>('POST', '/folders', { path }),
+    add: (path: string, keepInfo: boolean) => request<Folder>('POST', '/folders', { path, keepInfo }),
+    /** Before adding: does the folder already have library info from other PCs? */
+    probe: (path: string) => request<FolderProbe>('POST', '/folders/probe', { path }),
+    /** Start or stop keeping library info in the folder's `.memora`. */
+    setKeepInfo: (id: number, keepInfo: boolean) => request<Folder>('PATCH', `/folders/${id}`, { keepInfo }),
+    /** Keep the finished index there too, or stop (this PC's copy is deleted). */
+    setKeepIndex: (id: number, keepIndex: boolean) => request<Folder>('PATCH', `/folders/${id}`, { keepIndex }),
+    /** Stop, and move the folder's `.memora` (every PC's info) to the Recycle Bin. */
+    removeInfo: (id: number) => request<Folder>('DELETE', `/folders/${id}/info`),
     remove: (id: number) => request<void>('DELETE', `/folders/${id}`),
+    /** The folder moved or its drive letter changed: point it at its new place. */
+    locate: (id: number, path: string) => request<Folder>('POST', `/folders/${id}/locate`, { path }),
   },
   settings: {
     get: () => request<Settings>('GET', '/settings'),
@@ -284,6 +360,14 @@ export const api = {
   library: {
     status: () => request<LibraryStatus>('GET', '/library/status'),
     rescan: () => request<void>('POST', '/library/rescan'),
+    /** Write and read library info (`.memora`) now. */
+    sync: () => request<{ changed: boolean }>('POST', '/library/sync'),
+  },
+  backup: {
+    /** Write everything you made (favorites, albums, people…) to one file. */
+    write: (path: string) => request<BackupSummary>('POST', '/backup', { path }),
+    read: (path: string) => request<BackupSummary>('POST', '/backup/read', { path }),
+    restore: (path: string, settings: boolean) => request<Restored>('POST', '/backup/restore', { path, settings }),
   },
   timeline: (query: TimelineQuery = {}) => request<TimelineItem[]>('GET', `/timeline${queryString(query)}`),
   cameras: () => request<string[]>('GET', '/cameras'),
@@ -293,6 +377,8 @@ export const api = {
     favorite: (ids: number[], favorite: boolean) => request<void>('POST', '/media/favorite', { ids, favorite }),
     trash: (ids: number[]) => request<void>('POST', '/media/trash', { ids }),
     restore: (ids: number[]) => request<void>('POST', '/media/restore', { ids }),
+    archive: (ids: number[]) => request<void>('POST', '/media/archive', { ids }),
+    unarchive: (ids: number[]) => request<void>('POST', '/media/unarchive', { ids }),
     /** Send trashed files to the Windows Recycle Bin. All trashed items when `ids` is left out. */
     emptyTrash: (ids?: number[]) => request<Deleted>('POST', '/trash/empty', { ids }),
     albums: (id: number) => request<AlbumRef[]>('GET', `/media/${id}/albums`),
@@ -364,6 +450,40 @@ export function mediaUrl(id: number, what: 'thumb' | 'display' | 'original' | 's
   return `${resolved.baseUrl}/api/media/${id}/${what}?${v}token=${resolved.token}`
 }
 
+/** A video converted while it plays, starting `t` seconds in (the stream's own clock starts at 0). */
+export function streamUrl(id: number, t: number): string {
+  const url = mediaUrl(id, 'stream.mp4')
+  return t > 0 ? `${url}&t=${t.toFixed(3)}` : url
+}
+
+/** The video frame at `t` seconds, as a full-size PNG. */
+export function frameUrl(id: number, t: number): string {
+  if (!resolved) throw new Error('server info not loaded yet')
+  return `${resolved.baseUrl}/api/media/${id}/frame?t=${t.toFixed(3)}&token=${resolved.token}`
+}
+
+/** Small frames of a video in one picture, for the seek bar's preview. Tile `i` shows `i * interval` s. */
+export type Storyboard = { url: string; frames: number; interval: number; cols: number; rows: number }
+
+/**
+ * Loads a video's storyboard (the PC makes it on first use, which takes a second or two).
+ * The returned `url` is an object URL; revoke it when done.
+ */
+export async function loadStoryboard(id: number, version: number, signal?: AbortSignal): Promise<Storyboard> {
+  if (!resolved) throw new Error('server info not loaded yet')
+  const res = await fetch(`${resolved.baseUrl}/api/media/${id}/storyboard?v=${version}&token=${resolved.token}`, { signal })
+  if (!res.ok) throw new ApiError(res.status, `storyboard: ${res.status}`)
+  const layout = Object.fromEntries(
+    (res.headers.get('x-storyboard') ?? '').split(';').map((kv) => {
+      const [k, v] = kv.split('=')
+      return [k, Number(v)]
+    }),
+  )
+  const { frames, interval, cols, rows } = layout
+  if (!(frames > 0 && interval > 0 && cols > 0 && rows > 0)) throw new Error('storyboard: no layout')
+  return { url: URL.createObjectURL(await res.blob()), frames, interval, cols, rows }
+}
+
 /** Square picture of a face. */
 export function faceUrl(faceId: number): string {
   if (!resolved) throw new Error('server info not loaded yet')
@@ -382,6 +502,23 @@ export function openWithDefaultApp(path: string): Promise<void> {
 
 export function showInExplorer(path: string): Promise<void> {
   return invoke('show_in_explorer', { path })
+}
+
+/** Where the library data (database + cache) is. */
+export type DataFolder = { dataDir: string; size: number; moved: boolean }
+/** Where a move to the picked folder would go. */
+export type DataTarget = { target: string; size: number; free: number }
+export type DataMoveProgress = { phase: 'copy' | 'finish'; done: number; total: number }
+/** A failed move; `restart` when background work was already stopped. */
+export type DataMoveError = { message: string; restart: boolean }
+
+export const dataFolder = {
+  get: () => invoke<DataFolder>('data_folder'),
+  /** Rejects with the reason when the folder can't hold the data. */
+  target: (path: string) => invoke<DataTarget>('data_folder_target', { path }),
+  /** Copies, switches and restarts the app; rejects with a `DataMoveError`. */
+  move: (path: string) => invoke<void>('move_data_folder', { path }),
+  restart: () => invoke<void>('restart_app'),
 }
 
 /** Make a photo the Windows desktop background. */

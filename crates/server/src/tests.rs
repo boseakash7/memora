@@ -96,6 +96,125 @@ async fn folder_lifecycle() {
 }
 
 #[tokio::test]
+async fn library_info_in_the_folder() {
+    let h = harness();
+    let photos = h.dir_path.join("Photos");
+    std::fs::create_dir_all(&photos).unwrap();
+    image::RgbImage::new(40, 30).save(photos.join("beach.jpg")).unwrap();
+
+    let (_, p) = h.call("POST", "/api/folders/probe", true, Some(json!({"path": photos}))).await;
+    assert_eq!((p["root"].is_null(), p["pcs"].as_array().unwrap().len()), (true, 0), "{p}");
+
+    let (status, folder) = h.call("POST", "/api/folders", true, Some(json!({"path": photos, "keepInfo": true}))).await;
+    assert_eq!(status, StatusCode::CREATED, "{folder}");
+    assert_eq!(folder["sync"], true);
+    assert_eq!(folder["libraryInfo"]["writable"], true, "{folder}");
+    assert!(photos.join(".memora").join("memora.json").is_file());
+    let id = folder["id"].as_i64().unwrap();
+
+    let lib = h.library.clone();
+    assert!(tokio::task::spawn_blocking(move || lib.wait_idle(std::time::Duration::from_secs(30))).await.unwrap());
+    let (_, all) = h.call("GET", "/api/timeline", true, None).await;
+    let item = all[0]["id"].as_i64().unwrap();
+    h.call("POST", "/api/media/favorite", true, Some(json!({"ids": [item], "favorite": true}))).await;
+    let (status, _) = h.call("POST", "/api/library/sync", true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let logs: Vec<_> = std::fs::read_dir(photos.join(".memora").join("changes")).unwrap().collect();
+    assert_eq!(logs.len(), 1);
+    let log = std::fs::read_to_string(logs[0].as_ref().unwrap().path()).unwrap();
+    assert!(log.contains(r#""f":"fav","p":"beach.jpg""#), "{log}");
+
+    // A second PC would see it in the probe.
+    let (_, p) = h.call("POST", "/api/folders/probe", true, Some(json!({"path": photos}))).await;
+    assert_eq!(p["pcs"].as_array().unwrap().len(), 1);
+
+    // The finished index is kept there too (on by default) and can be switched off.
+    assert_eq!(folder["keepIndex"], true);
+    let (_, f) = h.call("GET", "/api/folders", true, None).await;
+    assert!(f[0]["libraryInfo"]["indexBytes"].as_u64().unwrap() > 0, "{f}");
+    let uri = format!("/api/folders/{id}");
+    let (_, f) = h.call("PATCH", &uri, true, Some(json!({"keepIndex": false}))).await;
+    assert_eq!((f["keepIndex"].as_bool(), f["libraryInfo"]["indexBytes"].is_null()), (Some(false), true), "{f}");
+    assert_eq!(std::fs::read_dir(photos.join(".memora").join("index")).unwrap().count(), 0);
+
+    let (_, off) = h.call("PATCH", &uri, true, Some(json!({"keepInfo": false}))).await;
+    assert_eq!((off["sync"].as_bool(), off["libraryInfo"].is_null()), (Some(false), true));
+    assert!(photos.join(".memora").is_dir(), "switching off keeps the folder");
+    assert_eq!(h.call("PATCH", &uri, true, Some(json!({"nope": 1}))).await.0, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn backup_and_restore() {
+    let h = harness();
+    let photos = h.dir_path.join("Photos");
+    std::fs::create_dir_all(&photos).unwrap();
+    image::RgbImage::new(40, 30).save(photos.join("beach.jpg")).unwrap();
+    h.call("POST", "/api/folders", true, Some(json!({"path": photos}))).await;
+    let lib = h.library.clone();
+    assert!(tokio::task::spawn_blocking(move || lib.wait_idle(std::time::Duration::from_secs(30))).await.unwrap());
+    let (_, all) = h.call("GET", "/api/timeline", true, None).await;
+    let id = all[0]["id"].as_i64().unwrap();
+    h.call("POST", "/api/media/favorite", true, Some(json!({"ids": [id], "favorite": true}))).await;
+
+    let file = h.dir_path.join("mine.memora-backup");
+    let (status, summary) = h.call("POST", "/api/backup", true, Some(json!({"path": file}))).await;
+    assert_eq!(status, StatusCode::OK, "{summary}");
+    assert_eq!(summary["favorites"], 1);
+    let (_, read) = h.call("POST", "/api/backup/read", true, Some(json!({"path": file}))).await;
+    assert_eq!(read, summary);
+
+    h.call("POST", "/api/media/favorite", true, Some(json!({"ids": [id], "favorite": false}))).await;
+    let (status, restored) = h.call("POST", "/api/backup/restore", true, Some(json!({"path": file}))).await;
+    assert_eq!(status, StatusCode::OK, "{restored}");
+    assert_eq!((restored["items"].as_u64(), restored["favorites"].as_u64(), restored["settings"].as_bool()), (Some(1), Some(1), Some(false)));
+    let (_, m) = h.call("GET", &format!("/api/media/{id}"), true, None).await;
+    assert_eq!(m["favorite"], true);
+
+    let bad = h.dir_path.join("bad.memora-backup");
+    std::fs::write(&bad, "nope").unwrap();
+    let (status, err) = h.call("POST", "/api/backup/read", true, Some(json!({"path": bad}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
+}
+
+#[tokio::test]
+async fn locate_a_moved_folder() {
+    let h = harness();
+    let photos = h.dir_path.join("E").join("Photos");
+    std::fs::create_dir_all(&photos).unwrap();
+    image::RgbImage::new(40, 30).save(photos.join("beach.jpg")).unwrap();
+    let (_, folder) = h.call("POST", "/api/folders", true, Some(json!({"path": photos}))).await;
+    let folder_id = folder["id"].as_i64().unwrap();
+    let lib = h.library.clone();
+    assert!(tokio::task::spawn_blocking(move || lib.wait_idle(std::time::Duration::from_secs(30))).await.unwrap());
+    let (_, all) = h.call("GET", "/api/timeline", true, None).await;
+    let id = all[0]["id"].as_i64().unwrap();
+    h.call("POST", "/api/media/favorite", true, Some(json!({"ids": [id], "favorite": true}))).await;
+
+    // The drive comes back as F:.
+    let moved = h.dir_path.join("F").join("Photos");
+    std::fs::create_dir_all(moved.parent().unwrap()).unwrap();
+    std::fs::rename(&photos, &moved).unwrap();
+    let (_, list) = h.call("GET", "/api/folders", true, None).await;
+    assert_eq!(list[0]["available"], false);
+
+    let uri = format!("/api/folders/{folder_id}/locate");
+    let (status, err) = h.call("POST", &uri, true, Some(json!({"path": h.dir_path}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
+    let (status, located) = h.call("POST", &uri, true, Some(json!({"path": moved}))).await;
+    assert_eq!(status, StatusCode::OK, "{located}");
+    assert_eq!(located["available"], true);
+    let lib = h.library.clone();
+    assert!(tokio::task::spawn_blocking(move || lib.wait_idle(std::time::Duration::from_secs(30))).await.unwrap());
+
+    let (_, m) = h.call("GET", &format!("/api/media/{id}"), true, None).await;
+    assert!(m["path"].as_str().unwrap().contains(r"\F\Photos\beach.jpg"), "{m}");
+    assert_eq!((m["favorite"].as_bool(), m["missing"].as_bool()), (Some(true), Some(false)));
+    let (_, all) = h.call("GET", "/api/timeline", true, None).await;
+    assert_eq!(all.as_array().unwrap().len(), 1, "same item, not indexed again");
+    assert_eq!(h.call("POST", "/api/folders/999/locate", true, Some(json!({"path": moved}))).await.0, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn settings_patch() {
     let h = harness();
     let (status, s) = h.call("PATCH", "/api/settings", true, Some(json!({"theme": "dark"}))).await;
@@ -184,6 +303,50 @@ async fn timeline_thumbnails_and_originals() {
     assert_eq!(headers[header::CONTENT_TYPE], "image/jpeg");
 
     assert_eq!(h.call("POST", "/api/library/rescan", true, None).await.0, StatusCode::ACCEPTED);
+}
+
+#[tokio::test]
+async fn video_storyboard_and_frame() {
+    let h = harness();
+    let photos = h.dir_path.join("Photos");
+    std::fs::create_dir_all(&photos).unwrap();
+    image::RgbImage::from_pixel(64, 48, image::Rgb([0, 128, 255])).save(photos.join("blue.jpg")).unwrap();
+    let made = std::process::Command::new("ffmpeg")
+        .args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=10:duration=3"])
+        .args(["-c:v", "libx264", "-g", "5", "-pix_fmt", "yuv420p"])
+        .arg(photos.join("clip.mp4"))
+        .status()
+        .is_ok_and(|s| s.success());
+    if !made {
+        eprintln!("FFmpeg not found; skipping");
+        return;
+    }
+    h.call("POST", "/api/folders", true, Some(json!({"path": photos}))).await;
+    let lib = h.library.clone();
+    assert!(tokio::task::spawn_blocking(move || lib.wait_idle(std::time::Duration::from_secs(60))).await.unwrap());
+    let (_, items) = h.call("GET", "/api/timeline", true, None).await;
+    let items = items.as_array().unwrap();
+    let video = items.iter().find(|i| i["v"] == true).unwrap()["id"].as_i64().unwrap();
+    let photo = items.iter().find(|i| i["v"] != true).unwrap()["id"].as_i64().unwrap();
+
+    // The layout header must be readable from the UI's origin.
+    let uri = format!("/api/media/{video}/storyboard?v=1&token={}", h.token);
+    let (status, headers, body) = h.raw("GET", &uri, false, None, &[("origin", "http://tauri.localhost")]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CONTENT_TYPE], "image/jpeg");
+    assert_eq!(headers["x-storyboard"], "frames=3;interval=1.000000;cols=3;rows=1");
+    assert!(headers[header::ACCESS_CONTROL_EXPOSE_HEADERS].to_str().unwrap().contains("x-storyboard"));
+    let img = image::load_from_memory(&body).unwrap();
+    assert_eq!((img.width(), img.height()), (720, 180));
+    assert!(!h.call("GET", &format!("/api/media/{photo}/storyboard"), true, None).await.0.is_success());
+
+    let (status, headers, body) = h.raw("GET", &format!("/api/media/{video}/frame?t=1.5"), true, None, &[]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CONTENT_TYPE], "image/png");
+    // PNG signature, then the IHDR chunk's width and height.
+    assert_eq!(&body[..8], b"\x89PNG\r\n\x1a\n");
+    let size = |at: usize| u32::from_be_bytes(body[at..at + 4].try_into().unwrap());
+    assert_eq!((size(16), size(20)), (320, 240));
 }
 
 #[tokio::test]
@@ -292,6 +455,24 @@ async fn organize_favorites_albums_trash_and_search() {
     assert!(photos.join("city.jpg").exists());
     let (_, trashed) = h.call("GET", "/api/timeline?scope=trash", true, None).await;
     assert_eq!(count(&trashed), 1);
+
+    // Archive: only on the Archive page, out of the counts, back on unarchive.
+    let before = rev();
+    let (_, r) = h.call("POST", "/api/media/archive", true, Some(json!({"ids": [city]}))).await;
+    assert_eq!(r["changed"], 1);
+    assert!(rev() > before);
+    let (_, all) = h.call("GET", "/api/timeline", true, None).await;
+    assert_eq!(ids_of(&all).iter().map(|x| x.1).collect::<Vec<_>>(), [beach]);
+    let (_, archived) = h.call("GET", "/api/timeline?scope=archive", true, None).await;
+    assert_eq!(ids_of(&archived).iter().map(|x| x.1).collect::<Vec<_>>(), [city]);
+    let (_, favs) = h.call("GET", "/api/timeline?scope=favorites", true, None).await;
+    assert_eq!(count(&favs), 1, "archived favorite left Favorites");
+    let (_, m) = h.call("GET", &format!("/api/media/{city}"), true, None).await;
+    assert_eq!(m["archived"], true);
+    assert_eq!(h.library.status().total, 1);
+    let (_, r) = h.call("POST", "/api/media/unarchive", true, Some(json!({"ids": [city, beach]}))).await;
+    assert_eq!(r["changed"], 1);
+    assert_eq!(h.library.status().total, 2);
 
     // Unauthorized and unknown ids.
     assert_eq!(h.call("POST", "/api/media/trash", false, Some(json!({"ids": [1]}))).await.0, StatusCode::UNAUTHORIZED);

@@ -10,8 +10,8 @@ axum = "0.8.9"
 blake3 = "1.8.7"
 futures-core = "0.3.34"
 if-addrs = "0.15.0"
-photos-core = { version = "0.1.0", path = "../core" }
-photos-ml = { version = "0.1.0", path = "../ml" }
+photos-core = { version = "0.2.0", path = "../core" }
+photos-ml = { version = "0.2.0", path = "../ml" }
 qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
 quick-xml = "0.42.0"
 rust-embed = { version = "8.13.0", features = ["include-exclude"] }

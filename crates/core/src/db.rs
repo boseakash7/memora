@@ -202,6 +202,90 @@ const MIGRATIONS: &[&str] = &[
     r#"
     INSERT OR REPLACE INTO settings(key, value) VALUES ('_refreshVideoDates', '1');
     "#,
+    // 9: Archive. Archived items are shown only on the Archive page (and the TV/DLNA Archive),
+    // so the partial indexes for the everyday lists leave them out.
+    r#"
+    ALTER TABLE media ADD COLUMN archived_at TEXT;
+    DROP INDEX media_timeline;
+    CREATE INDEX media_timeline ON media(taken_at DESC, id DESC)
+        WHERE missing = 0 AND trashed_at IS NULL AND archived_at IS NULL;
+    DROP INDEX media_favorites;
+    CREATE INDEX media_favorites ON media(taken_at DESC, id DESC)
+        WHERE favorite = 1 AND missing = 0 AND trashed_at IS NULL AND archived_at IS NULL;
+    CREATE INDEX media_archived ON media(taken_at DESC, id DESC)
+        WHERE archived_at IS NOT NULL AND missing = 0 AND trashed_at IS NULL;
+    "#,
+    // 10: library info kept in a `.memora` folder next to the photos (see `sync`).
+    // Albums and people get ids that are the same on every PC.
+    r#"
+    ALTER TABLE albums ADD COLUMN uid TEXT;
+    UPDATE albums SET uid = lower(hex(randomblob(16)));
+    CREATE UNIQUE INDEX albums_uid ON albums(uid);
+    CREATE TRIGGER albums_uid AFTER INSERT ON albums WHEN new.uid IS NULL BEGIN
+        UPDATE albums SET uid = lower(hex(randomblob(16))) WHERE id = new.id;
+    END;
+    ALTER TABLE persons ADD COLUMN uid TEXT;
+    UPDATE persons SET uid = lower(hex(randomblob(16)));
+    CREATE UNIQUE INDEX persons_uid ON persons(uid);
+    CREATE TRIGGER persons_uid AFTER INSERT ON persons WHEN new.uid IS NULL BEGIN
+        UPDATE persons SET uid = lower(hex(randomblob(16))) WHERE id = new.id;
+    END;
+
+    ALTER TABLE folders ADD COLUMN sync INTEGER NOT NULL DEFAULT 0; -- keep library info in `.memora`
+    ALTER TABLE folders ADD COLUMN sync_root TEXT;                  -- folder holding the `.memora`
+
+    -- The newest known value of every synced field (from this PC or read from another
+    -- PC's log). The library tables are kept in step with it.
+    CREATE TABLE sync_reg (
+        folder_id  INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+        field      TEXT NOT NULL,
+        item       TEXT NOT NULL,   -- path relative to the `.memora` folder, lowercase, '/'; '' for albums and people
+        sub        TEXT NOT NULL,   -- album or person uid, face box; ''
+        hash       TEXT,            -- the item's blake3, when known
+        clock      TEXT NOT NULL,   -- hybrid logical clock, compares as text
+        value      TEXT NOT NULL,   -- JSON
+        own        INTEGER NOT NULL DEFAULT 0, -- belongs in this PC's log
+        PRIMARY KEY (folder_id, field, item, sub)
+    ) WITHOUT ROWID;
+    CREATE INDEX sync_reg_hash ON sync_reg(hash) WHERE hash IS NOT NULL;
+    -- Lines not yet written to the folder's `.memora` (drive unplugged, read-only...).
+    CREATE TABLE sync_outbox (
+        id         INTEGER PRIMARY KEY,
+        folder_id  INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+        line       TEXT NOT NULL
+    );
+    -- How far each PC's log has been read.
+    CREATE TABLE sync_cursor (
+        folder_id  INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+        file       TEXT NOT NULL,
+        gen        TEXT NOT NULL,
+        offset     INTEGER NOT NULL,
+        PRIMARY KEY (folder_id, file)
+    ) WITHOUT ROWID;
+    "#,
+    // 11: the finished index kept in `.memora` too (see `snapshot`), so another PC can skip
+    // reading, hashing and recognising files it already knows.
+    r#"
+    ALTER TABLE folders ADD COLUMN keep_index INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE folders ADD COLUMN index_mark TEXT;   -- what the last written snapshot covered
+    -- 1: metadata and hashes came from a snapshot (only the thumbnail is made here),
+    -- 2: recognition too.
+    ALTER TABLE media ADD COLUMN imported INTEGER NOT NULL DEFAULT 0;
+    "#,
+    // 12: a restored backup's face decisions for items recognition hasn't looked at yet
+    // (see `backup`); applied when it does.
+    r#"
+    CREATE TABLE restore_faces (
+        media_id  INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+        box       TEXT NOT NULL,   -- x,y,w,h
+        value     TEXT NOT NULL    -- {"person": uid, "locked": n}
+    );
+    CREATE INDEX restore_faces_media ON restore_faces(media_id);
+    CREATE TABLE restore_persons (
+        uid    TEXT PRIMARY KEY,
+        value  TEXT NOT NULL       -- {"name", "hidden"}
+    ) WITHOUT ROWID;
+    "#,
 ];
 
 pub type Conn = PooledConnection<SqliteConnectionManager>;

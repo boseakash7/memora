@@ -4,6 +4,7 @@
 
 pub mod ai;
 pub mod albums;
+pub mod backup;
 pub mod browse;
 pub mod db;
 pub mod duplicates;
@@ -23,6 +24,9 @@ pub mod raw;
 pub mod scan;
 pub mod semantic;
 pub mod settings;
+pub mod snapshot;
+pub mod storage;
+pub mod sync;
 pub mod thumbs;
 pub mod transcode;
 

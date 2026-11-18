@@ -206,6 +206,9 @@ struct Home {
     videos: Vec<TimelineItem>,
     albums: Vec<Album>,
     places: Vec<TvPlace>,
+    /// Newest archived items; absent while the Archive isn't shared.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    archive: Option<Vec<TimelineItem>>,
     transcode: bool,
 }
 
@@ -230,6 +233,13 @@ async fn home(State(s): State<LanState>) -> Result<Json<Home>, ApiError> {
         let mut places = places::list(&db)?;
         places.sort_by(|a, b| b.count.cmp(&a.count));
         places.truncate(ROW);
+        let archive = if cfg.archive {
+            let mut list = media::query(&db, &media::Query { scope: Scope::Archive, ..Default::default() })?;
+            list.truncate(ROW);
+            Some(list)
+        } else {
+            None
+        };
         Ok(Home {
             name: cfg.device_name.clone(),
             total: all.len(),
@@ -241,6 +251,7 @@ async fn home(State(s): State<LanState>) -> Result<Json<Home>, ApiError> {
                 .into_iter()
                 .map(|p| TvPlace { country_name: crate::dlna::countries::name(&p.country).to_owned(), place: p })
                 .collect(),
+            archive,
             transcode: cfg.transcode,
         })
     })
@@ -250,7 +261,7 @@ async fn home(State(s): State<LanState>) -> Result<Json<Home>, ApiError> {
 
 #[derive(Deserialize)]
 struct ItemsQuery {
-    /// `all`, `favorites`, `videos`, `album` or `place`.
+    /// `all`, `favorites`, `videos`, `album`, `place` or `archive`.
     scope: String,
     id: Option<i64>,
 }
@@ -266,6 +277,8 @@ async fn items(State(s): State<LanState>, Query(q): Query<ItemsQuery>) -> Result
             query.album = Some(q.id.ok_or_else(|| ApiError::BadRequest("album id missing".into()))?);
         }
         "place" => query.place = Some(q.id.ok_or_else(|| ApiError::BadRequest("place id missing".into()))?),
+        "archive" if s.cfg().archive => query.scope = Scope::Archive,
+        "archive" => return Err(photos_core::Error::NotFound.into()),
         other => return Err(ApiError::BadRequest(format!("unknown list: {other}"))),
     }
     let db = s.app.library.db().clone();

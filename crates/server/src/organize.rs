@@ -1,4 +1,4 @@
-//! Favorites, albums and trash. Changes tell the UI to reload its lists.
+//! Favorites, albums, archive and trash. Changes tell the UI to reload its lists.
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -19,6 +19,8 @@ pub fn routes() -> Router<AppState> {
         .route("/media/favorite", post(favorite))
         .route("/media/trash", post(trash))
         .route("/media/restore", post(restore))
+        .route("/media/archive", post(archive))
+        .route("/media/unarchive", post(unarchive))
         .route("/media/{id}/albums", get(albums_of))
         .route("/trash/empty", post(empty_trash))
         .route("/albums", get(list_albums).post(create_album))
@@ -58,10 +60,15 @@ async fn favorite(State(s): State<AppState>, Json(body): Json<Favorite>) -> Resu
     Ok(changed(n))
 }
 
-async fn trash(State(s): State<AppState>, Json(body): Json<Ids>) -> Result<Json<Value>, ApiError> {
+/// Run a change on some items; open lists reload if anything changed.
+async fn change(
+    s: AppState,
+    ids: Vec<i64>,
+    f: fn(&photos_core::db::Db, &[i64]) -> photos_core::Result<usize>,
+) -> Result<Json<Value>, ApiError> {
     let lib = s.library;
     let n = blocking(move || {
-        let n = organize::trash(lib.db(), &body.ids)?;
+        let n = f(lib.db(), &ids)?;
         if n > 0 {
             lib.notify_changed();
         }
@@ -71,17 +78,20 @@ async fn trash(State(s): State<AppState>, Json(body): Json<Ids>) -> Result<Json<
     Ok(changed(n))
 }
 
+async fn trash(State(s): State<AppState>, Json(body): Json<Ids>) -> Result<Json<Value>, ApiError> {
+    change(s, body.ids, organize::trash).await
+}
+
 async fn restore(State(s): State<AppState>, Json(body): Json<Ids>) -> Result<Json<Value>, ApiError> {
-    let lib = s.library;
-    let n = blocking(move || {
-        let n = organize::restore(lib.db(), &body.ids)?;
-        if n > 0 {
-            lib.notify_changed();
-        }
-        Ok(n)
-    })
-    .await?;
-    Ok(changed(n))
+    change(s, body.ids, organize::restore).await
+}
+
+async fn archive(State(s): State<AppState>, Json(body): Json<Ids>) -> Result<Json<Value>, ApiError> {
+    change(s, body.ids, organize::archive).await
+}
+
+async fn unarchive(State(s): State<AppState>, Json(body): Json<Ids>) -> Result<Json<Value>, ApiError> {
+    change(s, body.ids, organize::unarchive).await
 }
 
 #[derive(Deserialize)]

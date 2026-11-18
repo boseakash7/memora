@@ -3,7 +3,7 @@
 //! Object ids:
 //! - `0` root; `t` Timeline, `t:2024` a year, `t:2024-03` a month
 //! - `a` Albums, `a:12` an album; `h` People, `h:7` a person; `p` Places, `p:IN` a country, `pl:45` a place
-//! - `f` Favorites, `v` Videos; `d` Folders, `d:3` a watched folder, `d:3:Trip/Day 2` inside it
+//! - `f` Favorites, `v` Videos, `r` Archive; `d` Folders, `d:3` a watched folder, `d:3:Trip/Day 2` inside it
 //! - items: `<parent id>|<media id>` (Windows file names can't contain `|`)
 
 use std::collections::BTreeMap;
@@ -54,6 +54,7 @@ enum Obj {
     Place(i64),
     Favorites,
     Videos,
+    Archive,
     Folders,
     Folder(i64, String),
     Item(String, i64),
@@ -80,6 +81,7 @@ impl Obj {
             ("pl", n) => Obj::Place(digits(n)?),
             ("f", "") => Obj::Favorites,
             ("v", "") => Obj::Videos,
+            ("r", "") => Obj::Archive,
             ("d", "") => Obj::Folders,
             ("d", rest) => {
                 let (n, rel) = rest.split_once(':').unwrap_or((rest, ""));
@@ -103,6 +105,7 @@ impl Obj {
             Obj::Place(n) => format!("pl:{n}"),
             Obj::Favorites => "f".into(),
             Obj::Videos => "v".into(),
+            Obj::Archive => "r".into(),
             Obj::Folders => "d".into(),
             Obj::Folder(n, rel) if rel.is_empty() => format!("d:{n}"),
             Obj::Folder(n, rel) => format!("d:{n}:{rel}"),
@@ -167,6 +170,26 @@ fn favorites_query() -> Query {
     Query { scope: Scope::Favorites, ..Default::default() }
 }
 
+fn archive_query() -> Query {
+    Query { scope: Scope::Archive, ..Default::default() }
+}
+
+/// What the tree shows besides the library: the root's title and whether the Archive is shared.
+pub struct Tree {
+    pub root_title: String,
+    pub archive: bool,
+}
+
+/// The root's folders. The Archive is there only while it is shared and has items.
+fn tops(db: &Db, tree: &Tree) -> Result<Vec<Obj>> {
+    let mut tops = vec![Obj::Timeline, Obj::Albums, Obj::People, Obj::Places, Obj::Favorites, Obj::Videos];
+    if tree.archive && count(db, &archive_query())? > 0 {
+        tops.push(Obj::Archive);
+    }
+    tops.push(Obj::Folders);
+    Ok(tops)
+}
+
 /// People shown on TVs: named and not hidden (unnamed groups are often strangers), with
 /// the photo their face picture comes from.
 fn named_people(db: &Db) -> Result<Vec<(people::Person, Option<i64>)>> {
@@ -204,9 +227,9 @@ fn folder_title(db: &Db, id: i64, rel: &str) -> Result<String> {
 }
 
 /// The container `obj` describes (title, parent, size), for BrowseMetadata and listings.
-fn describe(db: &Db, obj: &Obj, root_title: &str) -> Result<Container> {
+fn describe(db: &Db, obj: &Obj, tree: &Tree) -> Result<Container> {
     Ok(match obj {
-        Obj::Root => container(obj, "-1", root_title, 7, None),
+        Obj::Root => container(obj, "-1", tree.root_title.clone(), tops(db, tree)?.len() as u64, None),
         Obj::Timeline => container(obj, "0", "Timeline", browse::years(db)?.len() as u64, None),
         Obj::Year(y) => {
             let year = browse::years(db)?.into_iter().find(|p| &p.key == y).ok_or(Error::NotFound)?;
@@ -238,6 +261,8 @@ fn describe(db: &Db, obj: &Obj, root_title: &str) -> Result<Container> {
         }
         Obj::Favorites => container(obj, "0", "Favorites", count(db, &favorites_query())?, None),
         Obj::Videos => container(obj, "0", "Videos", count(db, &videos_query())?, None),
+        Obj::Archive if tree.archive => container(obj, "0", "Archive", count(db, &archive_query())?, None),
+        Obj::Archive => return Err(Error::NotFound),
         Obj::Folders => container(obj, "0", "Folders", folders::list(db)?.len() as u64, None),
         Obj::Folder(n, rel) => {
             let listing = browse::folder(db, *n, rel)?;
@@ -291,17 +316,14 @@ fn fill_codecs(db: &Db, list: &mut [Media]) {
 }
 
 /// BrowseDirectChildren: one page of `id`'s children and how many there are in all.
-pub fn children(db: &Db, id: &str, start: u64, count: u64, root_title: &str) -> Result<(Vec<Node>, u64)> {
+pub fn children(db: &Db, id: &str, start: u64, count: u64, tree: &Tree) -> Result<(Vec<Node>, u64)> {
     let obj = Obj::parse(id).ok_or(Error::NotFound)?;
     let containers = |list: Vec<Container>| {
         let (page, total) = page_of(list, start, count);
         (page.into_iter().map(Node::Container).collect(), total)
     };
     Ok(match &obj {
-        Obj::Root => {
-            let tops = [Obj::Timeline, Obj::Albums, Obj::People, Obj::Places, Obj::Favorites, Obj::Videos, Obj::Folders];
-            containers(tops.iter().map(|o| describe(db, o, root_title)).collect::<Result<_>>()?)
-        }
+        Obj::Root => containers(tops(db, tree)?.iter().map(|o| describe(db, o, tree)).collect::<Result<_>>()?),
         Obj::Timeline => containers(
             browse::years(db)?
                 .into_iter()
@@ -360,10 +382,12 @@ pub fn children(db: &Db, id: &str, start: u64, count: u64, root_title: &str) -> 
         }
         Obj::Favorites => items(db, &obj, &favorites_query(), start, count)?,
         Obj::Videos => items(db, &obj, &videos_query(), start, count)?,
+        Obj::Archive if tree.archive => items(db, &obj, &archive_query(), start, count)?,
+        Obj::Archive => return Err(Error::NotFound),
         Obj::Folders => containers(
             folders::list(db)?
                 .into_iter()
-                .map(|f| describe(db, &Obj::Folder(f.id, String::new()), root_title))
+                .map(|f| describe(db, &Obj::Folder(f.id, String::new()), tree))
                 .collect::<Result<_>>()?,
         ),
         Obj::Folder(n, rel) => {
@@ -386,7 +410,7 @@ pub fn children(db: &Db, id: &str, start: u64, count: u64, root_title: &str) -> 
                 .filter(|(i, _)| wanted(first_item + *i as u64))
                 .map(|(_, id)| *id)
                 .collect();
-            let list: Vec<Media> = ids.iter().filter_map(|id| media::get_visible(db, *id).ok()).collect();
+            let list: Vec<Media> = ids.iter().filter_map(|id| media::get_visible(db, *id, false).ok()).collect();
             nodes.extend(wrap_items(db, &obj, list));
             (nodes, total)
         }
@@ -395,14 +419,15 @@ pub fn children(db: &Db, id: &str, start: u64, count: u64, root_title: &str) -> 
 }
 
 /// BrowseMetadata: the object itself.
-pub fn metadata(db: &Db, id: &str, root_title: &str) -> Result<Node> {
+pub fn metadata(db: &Db, id: &str, tree: &Tree) -> Result<Node> {
     match Obj::parse(id).ok_or(Error::NotFound)? {
         Obj::Item(parent, n) => {
-            let mut list = vec![media::get_visible(db, n)?];
+            let archive = tree.archive && parent == Obj::Archive.id();
+            let mut list = vec![media::get_visible(db, n, archive)?];
             fill_codecs(db, &mut list);
             Ok(Node::Item { parent, media: Box::new(list.remove(0)) })
         }
-        obj => Ok(Node::Container(describe(db, &obj, root_title)?)),
+        obj => Ok(Node::Container(describe(db, &obj, tree)?)),
     }
 }
 
