@@ -16,6 +16,11 @@ pub enum Error {
     Invalid(String),
     #[error("folder {0} is already in the library")]
     FolderExists(PathBuf),
+    /// The locked folder must be unlocked first.
+    #[error("the locked folder is locked")]
+    Locked,
+    #[error("wrong password")]
+    WrongPassword,
     /// A file could not be read or decoded.
     #[error("{0}")]
     Media(String),

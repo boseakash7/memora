@@ -9,14 +9,17 @@
     type ServerInfo,
     type Settings,
     type Theme,
+    type Animations,
   } from '../lib/api'
   import Icon from '../lib/Icon.svelte'
   import AiCard from '../components/AiCard.svelte'
   import SharingCard from '../components/SharingCard.svelte'
   import StorageCard from '../components/StorageCard.svelte'
   import BackupCard from '../components/BackupCard.svelte'
+  import VaultCard from '../components/VaultCard.svelte'
   import { indexingStep, isBusy, library } from '../lib/library.svelte'
-  import { applyTheme } from '../lib/theme'
+  import { switchTheme } from '../lib/theme'
+  import { applyAnimations, autoLevel, hasGpu, motion } from '../lib/motion.svelte'
   import { formatBytes } from '../lib/dates'
 
   let folders = $state<Folder[]>([])
@@ -31,6 +34,43 @@
     { value: 'light', label: 'Light' },
     { value: 'dark', label: 'Dark' },
   ]
+
+  const animationLevels: { value: Animations; label: string }[] = [
+    { value: 'auto', label: 'Automatic' },
+    { value: 'high', label: 'High' },
+    { value: 'medium', label: 'Medium' },
+    { value: 'none', label: 'None' },
+  ]
+
+  const animationAt = $derived(Math.max(0, animationLevels.findIndex((l) => l.value === motion.setting)))
+
+  const LEVEL_NAME = { high: 'High', medium: 'Medium', none: 'None' } as const
+
+  /** What Automatic stands for here, and why. */
+  const autoNote = $derived.by(() => {
+    void motion.setting // re-check when the setting changes (e.g. Windows' switch was flipped)
+    const level = autoLevel()
+    const why =
+      level === 'none'
+        ? 'animation effects are turned off in Windows'
+        : hasGpu()
+          ? 'a graphics card was found'
+          : 'no graphics card was found'
+    return `Automatic uses ${LEVEL_NAME[level]} on this PC: ${why}.`
+  })
+
+  const animationNote = $derived.by(() => {
+    switch (motion.setting) {
+      case 'auto':
+        return autoNote
+      case 'high':
+        return 'Springy, layered motion with blur behind dialogs. Best with a graphics card.'
+      case 'medium':
+        return 'Quick, subtle fades and slides.'
+      case 'none':
+        return 'Everything changes instantly.'
+    }
+  })
 
   $effect(() => {
     Promise.all([api.folders.list(), api.settings.get(), serverInfo()])
@@ -157,8 +197,26 @@
     }
   }
 
+  async function setMemories(on: boolean) {
+    try {
+      settings = await api.settings.update({ memories: on })
+      if (on) await api.memories.rebuild()
+    } catch (e) {
+      error = errorMessage(e)
+    }
+  }
+
+  async function setAnimations(animations: Animations) {
+    applyAnimations(animations)
+    try {
+      settings = await api.settings.update({ animations })
+    } catch (e) {
+      error = errorMessage(e)
+    }
+  }
+
   async function setTheme(theme: Theme) {
-    applyTheme(theme)
+    switchTheme(theme)
     try {
       settings = await api.settings.update({ theme })
     } catch (e) {
@@ -308,12 +366,55 @@
           </label>
         {/each}
       </div>
+
+      <div class="setting-sub">
+        <h3>Animations</h3>
+        <p class="muted">How much the app moves when pages, photos, menus and dialogs open.</p>
+        <div
+          class="segmented"
+          role="radiogroup"
+          aria-label="Animations"
+          style:--count={animationLevels.length}
+          style:--at={animationAt}
+        >
+          <span class="segmented-thumb" aria-hidden="true"></span>
+          {#each animationLevels as l (l.value)}
+            <label class:on={motion.setting === l.value}>
+              <input
+                type="radio"
+                name="animations"
+                value={l.value}
+                checked={motion.setting === l.value}
+                onchange={() => setAnimations(l.value)}
+              />
+              {l.label}
+            </label>
+          {/each}
+        </div>
+        <p class="muted small-note">{animationNote}</p>
+      </div>
     </div>
   {/if}
 
   {#if settings}
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h2>Memories</h2>
+          <p class="muted">
+            Stories made from your library: the same days in earlier years, trips, people you've named and the best of
+            each year. Shown above Photos, on the Memories page and on the TV page. Worked out on this PC.
+          </p>
+        </div>
+        <label class="switch" title={settings.memories ? 'Turn off' : 'Turn on'}>
+          <input type="checkbox" checked={settings.memories} onchange={(e) => setMemories(e.currentTarget.checked)} />
+          <span class="slider"></span>
+        </label>
+      </div>
+    </div>
     <AiCard {settings} onchange={(s) => (settings = s)} />
     <SharingCard {settings} onchange={(s) => (settings = s)} />
+    <VaultCard {settings} onchange={(s) => (settings = s)} />
   {/if}
 
   <StorageCard />

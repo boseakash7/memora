@@ -8,6 +8,7 @@ rust-version.workspace = true
 [dependencies]
 axum = "0.8.9"
 blake3 = "1.8.7"
+chrono = "0.4.45"
 futures-core = "0.3.34"
 if-addrs = "0.15.0"
 photos-core = { version = "0.2.0", path = "../core" }

@@ -137,7 +137,8 @@ Hand-written (no mature Rust crate exists):
 6. **AI**: ort setup with DirectML/CPU, faces + People UI, CLIP + semantic search.
 7. **Packaging**: bundle ffmpeg sidecar, models, GeoJSON; NSIS/MSI installer via `cargo tauri build`; Windows Firewall rule prompt for the LAN port.
 8. **v0.3, organize and carry your library** (added 2026-11-11): custom title bar, right-click menus, Archive (incl. TV/DLNA Archive), movable data folder + "Locate folder…", `.memora` library info sync with shared index, backup file.
-9. **Private vault** (planned, after v0.3).
+9. **Private vault** (v0.4, started 2026-11-18).
+10. **Memories** (v0.4, started 2026-11-18): on this day, trips, people, best of a month/year; Photos carousel, Memories page, TV row.
 
 ## Verification
 - `cargo test --workspace`: unit tests for EXIF/date parsing, DIDL-Lite/SOAP generation (against sample TV requests), SSDP response format, phash/BK-tree, clustering, Range header handling.
@@ -184,7 +185,8 @@ Biggest unknowns: TV-specific DLNA quirks (each brand behaves differently) and g
 | 6. AI (faces + CLIP) | ✅ Done |
 | 7. Packaging | ✅ Built (v0.2), unsigned until a certificate is set up |
 | 8. v0.3: title bar, right-click menus, Archive, portable library | ✅ Built (2026-11-18): custom title bar, right-click menus, Archive, data folder move and Locate folder, `.memora` library info sync and index snapshot, backup file |
-| 9. Private vault | 📝 Planned (2026-11-05), not started |
+| 9. v0.4: Private vault | ✅ Built 2026-11-18 (per-row encryption instead of SQLCipher); locking on Windows lock and on minimize not tried yet |
+| 10. v0.4: Memories | ✅ Built 2026-11-18 (on this day, trips, people, best of; Photos carousel, Memories page, story player, TV row) |
 
 ### Completed
 
@@ -365,6 +367,24 @@ Biggest unknowns: TV-specific DLNA quirks (each brand behaves differently) and g
 - Race fixes found by the parallel test runs: a folder added with library info is now written with it in one insert (`folders::add_with`), so the startup scan can't see it without and skip the index snapshot; the scan thread updates the counts before it reports "scanning done", so the library never looks idle with work left.
 - Tests: `everything_comes_back_on_a_fresh_install` (fresh library: folder added back, favorite, archive, trash, album with cover, settings; faces named and "not this person" applied when recognition finds them; nothing left waiting), `restoring_adds_but_never_undoes`, `items_are_found_by_hash_when_the_folder_moved`, `rejects_files_that_are_not_backups`; server `backup_and_restore`. photos-core 91, photos-ml 8, photos-server 31 tests pass (core 5 times in a row); clippy and svelte-check clean. Migration 12 ran on a copy of the real library.
 - Not checked in the running app: the Back up / Restore buttons and dialogs.
+
+**v0.4: Locked folder (vault)** (2026-11-18)
+- `core/vault/crypto.rs`: master key wrapped by Argon2id(password) and by the recovery key (160-bit, Crockford base32, `blake3::derive_key`); records sealed with XChaCha20-Poly1305 (record id as associated data); files in 64 KiB chunks, nonce = random prefix + chunk number, associated data = header + chunk number + last-chunk flag, so swapped, cut, reordered or mixed-in chunks fail. `Decryptor` is `Read + Seek` (HTTP Range).
+- `core/vault/store.rs`: `<data>\vault\vault.db` (hidden folder) with `meta` (only key-wrapping data) and `items(id, sealed record)`: no plaintext columns, `secure_delete`; every file under its own random name in `files\ab\`. Setup, unlock, recover (recovery key + new password), change password (needs the old one), new recovery key, lock, auto-lock (`lock_if_idle`), list/get/open part, add (encrypt, then decrypt and compare the hash), move out (decrypt to a folder under a unique name with the old modification time, hash check, then delete), delete, favorite. Stray files from an interrupted move are removed on unlock.
+- `core/vault.rs` `move_in`: encrypt original + cached thumbnail + display copy, check, **delete the original** (if it can't be deleted, the vault copy is dropped and the item stays in the library; changed from the plan's "row first", so a locked file can't end up in both places), then purge: `sync::forget_items` (this PC's `.memora` values for the item, album-cover values pointing at it, queued lines; the folder is marked `log_dirty` so its log is rewritten), rows (FTS, albums, faces and CLIP cascade) with `secure_delete`, cached pictures and face crops; then `VACUUM` + `wal_checkpoint(TRUNCATE)` so the name isn't left in free pages. `Library::move_to_vault` also rewrites the `.memora` log and index snapshot right away and resets the CLIP index. Migration 13: `folders.log_dirty`, FTS5 `secure-delete`. Moving the data folder copies `vault\` and deletes the old one.
+- Server (`server/src/vault.rs`, localhost only): `/api/vault`, `setup`, `unlock`, `recover`, `lock`, `password`, `recovery-key`, `items`, `items/{id}[/thumb|display|original]` (decrypted on the fly with Range, 206/416), `move-in`, `move-out`, `delete`, `favorite`. Every answer is `Cache-Control: no-store`; 423 while locked, 403 for a wrong password. Auto-lock task (setting `vaultLockMinutes`, 1-60, default 5).
+- App (`src-tauri/src/vault_guard.rs`): locks when Windows locks (`WTSRegisterSessionNotification`, `WM_WTSSESSION_CHANGE`) and, with `vaultLockOnMinimize`, on minimize; `clear_web_cache` empties WebView2's disk cache (`ICoreWebView2Profile2::ClearBrowsingData`, disk cache only) after a move in.
+- UI: Locked folder page (Utilities tile): set up with the password typed twice, recovery key shown once with an "I've saved it" check, unlock, "Forgot password?" with the recovery key; grid with selection (favorite, Move out… with a folder picker, Delete forever), Lock button, notices auto-lock. `VaultViewer` (photos; videos through `VideoPlayer`'s new `source` prop, without conversion, storyboard or frame copy). "Move to locked folder" in the right-click menu and the selection bar (`actions.moveToVault`: unlock prompt, then a confirmation saying originals are deleted). Locked folder card in Settings. `PhotoGrid` takes a `thumbUrl`; prompts can be password fields.
+- Tests: crypto (round trips at chunk edges, any range, damaged/cut/swapped/mixed chunks, wrong key, recovery key format), store (lifecycle, nothing readable on disk, move out, swapped records, auto-lock), `moved_items_leave_no_trace_in_the_library` (original gone, album cover falls back, search, caches, and the name and hash are in no file under `.memora` or the data folder), `an_original_that_cant_be_deleted_stays_in_the_library`, server `locked_folder`.
+- Checked in the running app (scratch library: 176 real photos/videos copied from `I:\My Photos` plus 4 generated, `PHOTOS_DATA_DIR`): setup screens, recovery key, right-click → Move to locked folder → confirm (file gone, library 180 → 179, its memory 4 → 3, the file name found in no file on disk), a 1 GB 4K HEVC video moved in 3.4 s and played with seeking in the vault viewer, Lock → thumbnails answer 423 and the unlock form shows, wrong-password message, unlock, move out (file back with its old date, indexed again). Not tried: locking on Windows lock and on minimize, the Change password / New recovery key buttons (covered by tests), the effect of clearing the WebView cache (the command ran without error).
+- Changed after use (2026-11-18): locked items stay in their photos folder. Each watched folder keeps the items that came from it in `<folder>\.memoraault\` (`vault.db` + `files\`; the outermost watched folder holding the original); items from outside every watched folder stay in `<data folder>ault\`. One master key for all places: each `vault.db` holds the same key data plus a `key_id` (derived from the master key) and `changed`; unlock tries the newest key data of each key, and places with an older copy (password changed while their drive was away) get the current one, so an old password stops working once the new key data is seen. Another PC that adds the folder opens it with the password. After unlock, items still in the data folder move into their folder in the background (`Vault::relocate`). "Stop keeping library info" removes everything in `.memora` except `vault`; file events in `.memoraault` don't wake the library-info reader. Tests: `items_stay_in_their_photos_folder`, `a_folder_that_was_away_gets_the_new_password`, `items_kept_at_home_move_into_their_folder`. Checked in the app: the scratch library's 1 GB video moved from the data folder to `Photos\.memoraault` on unlock and still plays (Range 206).
+
+**v0.4: Memories** (2026-11-18)
+- `core/memories.rs` + migration 14 (`memories`, `memory_removed`): on this day (±3 days, per earlier year, 3+ items after folding bursts), trips (home = the place with the most photo days; consecutive days mostly >100 km away, one empty day and days without GPS allowed; 2+ days with 8+ items, or 1 day with 20+; "Trip to A and B"), people (named, not hidden: "over the years" with 12+ items over 2+ years, "<name> in <last year>" with 15+), best of each past year (40+), highlights of the last 3 months (25+). Picking: junk left out (screenshot/screen recording/WhatsApp Sent names, PNG/GIF/WebP without a camera, CLIP hits for screenshot/document/receipt prompts), near-duplicates folded (phash ≤ 10 within 10 min), the best item of each equal-count time slice, videos at most a quarter, cover = best photo. Stable keys keep seen/hidden/removed; hidden memories that stop qualifying stay inactive. Lists only show visible items (Archive, trash and the locked folder take items out at once).
+- Server: `/api/memories` (+ `?hidden=true`), `/{id}`, PATCH `{hidden}`, `/{id}/seen`, `/{id}/remove`, `/rebuild`. Rebuild task at start, on day change, and after library changes (at least 10 min apart, while indexing is quiet); ~20 ms for 180 items. Setting `memories`. TV: `memories` in `/tv/api/home`, `items?scope=memory&id=` (404 when off).
+- UI: carousel above the Photos timeline (`PhotoGrid` `top` band that scrolls with the grid), Memories page (sections, Show hidden, right-click Play/Hide), `MemoryPlayer` story viewer (progress bars, 5 s photos with a slow zoom, muted videos up to 15 s, click left/right, hold to pause, Space/←/→/M/Esc, Open this photo in the normal viewer, Remove from memory, Hide memory), Memories switch in Settings. TV page: Memories row first; a memory opens as a running slideshow.
+- Tests: on this day (window, bursts, screenshots, day change), trips (two cities, day without GPS, short trip ignored), people and best of (favorite picked, time order, cover is a photo, month highlights), seen/hidden/removed/archived across rebuilds, curation spread and video cap; server `memories_row` (TV row, archived item leaves, switched off). photos-core 109, photos-ml 8, photos-server 34 tests pass; clippy and `npm run check` clean.
+- Checked in the running app on the scratch library: "2 years ago", "Best of 2025", "Trip to Vagator and Calangute" (10–13 Sept 2025) and "Trip to Cherrapunji" (15–22 Apr 2025) found from real GPS; carousel, Memories page, story player (advances, ←/→, Space, Esc, marked seen). Fixed after looking: the recovery key wrapped in the middle of a group. Not tried: the TV row on a TV, people memories (no named people in the scratch library), CLIP junk filtering on real screenshots.
 
 Changes from the original plan:
 - Faces are grouped by average linkage, not DBSCAN. CLIP search uses a neutral-text baseline and a relative cut-off. CLIP sees the picture's centre square (panorama edges are cut).
@@ -588,19 +608,22 @@ Goal: private photos and videos are **encrypted on disk** and open only inside t
 ### Design
 **Storage**
 - Vault folder (configurable, default `<data folder>\vault\ab\<random-id>.enc`): random names, no extension, originals removed.
-- Metadata (original name, dates, EXIF, GPS, dimensions) in a separate **SQLCipher** database `vault.db`, never in `library.db` or `media_fts`.
-- Thumbnails and the JPEG preview of HEIC are encrypted too. They are rendered at import time (while the original is readable), so later viewing never needs plaintext. Tiled-HEIC stitching needs file paths for FFmpeg, which is another reason to render at import.
+- Metadata (original name, dates, EXIF, GPS, dimensions) in a separate database `vault.db`, never in `library.db` or `media_fts`. **Changed 2026-11-18 (decided with the user): plain SQLite with every row encrypted, not SQLCipher.** SQLCipher needs OpenSSL (Perl/NASM to build it on Windows); per-row XChaCha20-Poly1305 under the master key uses the same crypto as the files. The user's requirement: nothing readable on disk. So `vault.db` has no plaintext columns at all: `meta(key, value)` holds only the key-wrapping data (salt, Argon2 parameters, the master key wrapped twice), `items(id, data)` a random id and the sealed record (name, path, dates, GPS, camera, sizes, the item's file key and its file names). Sorting and listing happen in memory after unlock. `PRAGMA secure_delete = ON`. What someone browsing the disk can see: that a vault exists, roughly how many items and how many bytes (the same as with SQLCipher).
+- Thumbnails and the JPEG preview of HEIC/RAW are encrypted too. They are taken from the library's cache at import time (the item is still in the library then; those plaintext cache files are deleted right after), so later viewing never needs plaintext. Every encrypted file gets its own random name (`files\ab\<random>`, no extension), so the files of one item can't be told apart from another's.
+- **Vault responses are sent with `Cache-Control: no-store`**, so WebView2 never writes a decrypted picture to its disk cache (`EBWebView\...\Cache`). Found while designing; normal thumbnails are cached for a year.
 
-**Crypto** (audited crates only: `argon2`, `chacha20poly1305`, `zeroize`, `rusqlite` with SQLCipher)
+**Crypto** (audited RustCrypto crates: `argon2`, `chacha20poly1305`, `zeroize`; `blake3`, already used, derives the recovery key's wrapping key)
 - Password -> **Argon2id** -> key-encryption key that wraps a random 256-bit **master key**. Changing the password only re-wraps the master key.
-- **Recovery key** (random, shown once) also wraps the master key. Forgotten password without it = data lost.
+- **Recovery key** (random 160 bits, shown once as 8 groups of 4 letters/digits, Crockford base32) also wraps the master key (wrapping key = `blake3::derive_key`; it has full entropy, so no Argon2 needed). Forgotten password without it = data lost.
+- Argon2id: 256 MiB, 3 passes, 4 lanes (~0.1 s on this PC: the lanes run in parallel; 64 MiB took only 22 ms, too cheap); the parameters are stored, so they can be raised later.
 - Each file has its own random file key, wrapped by the master key.
 - Files are encrypted in 64 KB chunks with **XChaCha20-Poly1305**; chunk index and a "final chunk" flag are in the authenticated data (stops truncation and reordering). Chunking keeps HTTP Range working, so video seeking still works.
 - Versioned file header so the format can change later.
 
 **Access**
 - Unlock derives the key and keeps it in memory only (`zeroize`). Auto-lock on idle, minimize or Windows lock; the key is wiped.
-- Vault endpoints exist only on the localhost API and need an unlocked session (token). They are not routed on the LAN/DLNA listener.
+- Vault endpoints exist only on the localhost API (which already needs the per-launch token) and answer 423 while locked. They are not routed on the LAN/DLNA listener. (No second vault token: the same page would hold both, so it adds nothing.)
+- Auto-lock after 5 minutes without vault activity (setting: 1/5/15 min), optionally when Memora is minimized, when Windows locks (`WTSRegisterSessionNotification` in the existing window subclass), and with the Lock button.
 - Vault items are excluded from timeline, search, map, places, duplicates, faces, CLIP, trash, albums, favorites, Archive, DLNA and `/tv`, and from everything v0.3 writes outside the PC's data folder: `.memora` change logs and index snapshots, and the library info backup file.
 - "Open in default player" and "Show in Explorer" are disabled for vault items.
 - Later, optional: Windows Hello unlock; exclude the window from screen capture (`WDA_EXCLUDEFROMCAPTURE`).
@@ -619,7 +642,7 @@ Goal: private photos and videos are **encrypted on disk** and open only inside t
 - The `I:` drive is nearly full, so the vault location must be configurable (by default it moves with the data folder, v0.3). It must not be inside a watched folder.
 - `.memora` (v0.3): other PCs' change logs and index snapshots may still hold the moved item's file name and hash until those PCs run and compact them; this PC can only clean its own files. The UI should say so for folders that sync with other PCs.
 - The vault is not synced between PCs in the first version; it lives on one PC (moving it means exporting and importing).
-- Encrypted videos cannot be played by external players.
+- Encrypted videos cannot be played by external players. Videos the webview can't decode could be converted by FFmpeg reading the decrypted stream from a localhost URL (HTTP input, so seeking works); first version: originals only, with the "can't play" message.
 - Hibernation file and page file may hold key material; BitLocker covers this.
 
 ### Steps
@@ -641,6 +664,59 @@ Goal: private photos and videos are **encrypted on disk** and open only inside t
 
 Windows Hello unlock would add roughly 1-2M input and 8-15k output. Biggest risks: building SQLCipher on Windows, and finding every place derived data can leak (caches, FTS, embeddings).
 
-### Open decisions
-- Vault location: configurable folder, default `<data folder>\vault` (`%LOCALAPPDATA%\Memora\vault` unless the data folder was moved) (suggested).
-- First version: password + recovery key only; Windows Hello later (suggested).
+### Decisions
+- Vault location: `<data folder>\vault`, moves with the data folder (the v0.3 move copies it, `finish_move` deletes the old one).
+- First version: password + recovery key only; Windows Hello later (roadmap item).
+- Per-row encryption instead of SQLCipher (2026-11-18, see Storage).
+
+---
+
+## Planned: Memories  (added 2026-11-18; decided with the user: all four kinds, Photos carousel, Memories page and TV row)
+
+Goal: like Google Photos' memories. Short stories made from the library on their own, shown as cards above the timeline and in a full-screen story viewer. Everything is computed offline from what the index already has (dates, places, faces, CLIP vectors, perceptual hashes); no new recognition work.
+
+### Kinds
+| Kind | Rule | Title / subtitle |
+|---|---|---|
+| On this day | For each earlier year: visible items taken within today ±3 days, at least 3 after bursts are folded. Shown while today is within 3 days of the date. | "3 years ago" / "18 Nov 2023" |
+| Trip | Home = the city with the most photo days. A trip = consecutive days (one empty day allowed) whose geotagged items are mostly over 100 km from home; 2+ days with 8+ items, or 1 day with 20+. Days without GPS inside the trip count. | "Trip to Gangtok" (most common city; two: "Gangtok and Darjeeling") / "2–6 Oct 2023" |
+| Person | Named, not hidden people with 12+ items over at least 2 calendar years: "over the years". Plus "<name> in <year>" for the last full year with 15+ items of them. | "Asha over the years" / "2019–2026" |
+| Best of | "Best of <year>" for each past year with 40+ items; "<Month> highlights" for the previous month with 25+ items. | "Best of 2025" / "50 photos" |
+
+### Picking the photos (`core/memories.rs`, `curate`)
+- Candidates: `VISIBLE` items (never archived, trashed, missing, or in the vault) at `stage >= HASH`.
+- Junk left out: screenshots and documents, by file name/folder (`screenshot`, `screen recording`, WhatsApp "Sent"), PNGs without a camera, and (when recognition has run) items whose CLIP vector is closer to "a screenshot" / "a document, receipt or text" than to a few photo prompts. The prompt vectors are computed once by the ML crate and stored in settings (`_memoryPrompts`).
+- Score: favorite +3, named people in it +1 each (max 3), photo over video +0.5, resolution ≥ 2 MP +0.5.
+- Spread over time: the candidates are cut into as many time slices as photos wanted and the best item of each slice is taken. Near-duplicates (perceptual hash Hamming ≤ 10 within 10 minutes) keep only the best one.
+- Sizes: on this day ≤ 20, trip ≤ 40, person ≤ 30, best of ≤ 50. Videos at most a quarter. Cover = best-scoring photo (not a video).
+
+### Storage and refresh
+- Migration 13: `memories(id, key UNIQUE, kind, title, subtitle, start_day, end_day, cover_id, items JSON, score, created_at, seen_at, hidden)` and `memory_removed(key, media_id)`. `key` is stable (`day:2023-11-18`, `trip:2023-10-02`, `person:<uid>`, `person:<uid>:2025`, `year:2025`, `month:2026-10`), so Hide, seen and removed photos survive a rebuild.
+- Built at startup, when the day changes, and after indexing/recognition settle (at most every 10 minutes): one pass over the visible items. A memory whose items changed is updated in place (same key); memories that no longer qualify are dropped unless hidden (hidden ones are kept so they stay hidden).
+- Settings: "Show memories" (on).
+
+### UI
+- **Photos page carousel** (above the first date group, scrolls with the grid): up to 12 cards, on-this-day first, then the newest unseen others. Card = cover with a gradient, title, subtitle. Hidden when there are none or the setting is off.
+- **Memories page** (sidebar): sections On this day, Trips, People, Best of; card right-click: Play, Hide this memory.
+- **Story viewer** (`MemoryPlayer.svelte`): full window, black; progress bars at the top, each photo 5 s with a slow zoom, videos play muted up to 15 s; click the right/left third = next/previous, Space pauses, ←/→, Esc closes; toolbar: title, Pause, Sound, "Open this photo", "Remove from memory", "Hide memory", window buttons. Marks the memory seen.
+- **TV page**: a Memories row first on the home screen (when there are any); opening one plays the slideshow from the first item.
+- DLNA: not planned (not asked for).
+
+### API
+- `GET /api/memories` (cards), `GET /api/memories/{id}` (+ items as timeline items), `POST /api/memories/{id}/seen`, `PATCH /api/memories/{id}` `{hidden}`, `POST /api/memories/{id}/remove` `{ids}`.
+- LAN: Memories row in the TV home + `items?memory=<id>` (same visibility rules; archived items never).
+
+### Steps
+1. Migration 13, `memories.rs` (kinds, curate, rebuild with stable keys), tests with a synthetic library (dates across years, a trip far from home, a named person, bursts, screenshots, archived items left out).
+2. Refresh thread + API + setting.
+3. UI: carousel, Memories page, story viewer.
+4. TV row.
+
+### Effort estimate (same basis as above)
+| Step | Input tokens (mostly cached) | Output tokens |
+|---|---|---|
+| 1. Core rules + tests | 1-3M | 12-20k |
+| 2. Refresh + API | 1-2M | 5-8k |
+| 3. UI (carousel, page, story viewer) | 2-3M | 15-25k |
+| 4. TV row | 0.5-1M | 3-5k |
+| **Total** | **~5-9M** | **~35-58k** (about 1-2 days) |

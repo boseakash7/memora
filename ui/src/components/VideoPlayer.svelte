@@ -39,6 +39,7 @@
     keys = true,
     idle = $bindable(false),
     onopenexternal,
+    source,
   }: {
     item: TimelineItem
     /** On-screen size of the video, fitted to the stage. */
@@ -47,7 +48,11 @@
     keys?: boolean
     /** Controls hidden while playing and the mouse is still; the viewer hides its bar too. */
     idle?: boolean
-    onopenexternal: () => void
+    /** Offer "Open in default player" when it can't play here. */
+    onopenexternal?: () => void
+    /** Play this address instead of the library's (the locked folder). No conversion,
+     *  storyboard or frame copy then: those need the file in the library. */
+    source?: { original: string; poster?: string }
   } = $props()
 
   let video = $state<HTMLVideoElement>()
@@ -63,7 +68,7 @@
   /** The thumbnail until the first frame shows; later loads (converted jumps) keep it off, so it doesn't flash. */
   // The viewer makes a new player for each item, so reading `item` once is enough here and below.
   // svelte-ignore state_referenced_locally
-  let poster = $state<string | undefined>(mediaUrl(item.id, 'thumb', item.m))
+  let poster = $state<string | undefined>(source ? source.poster : mediaUrl(item.id, 'thumb', item.m))
 
   let paused = $state(true)
   let ended = $state(false)
@@ -84,7 +89,7 @@
   const src = $derived(
     mode === 'converted'
       ? `${streamUrl(item.id, offset)}${generation ? `&r=${generation}` : ''}`
-      : mediaUrl(item.id, 'original'),
+      : (source?.original ?? mediaUrl(item.id, 'original')),
   )
   // svelte-ignore state_referenced_locally
   const knownDuration = item.d ? item.d / 1000 : 0
@@ -137,6 +142,7 @@
   const storyAbort = new AbortController()
   // Asked for a moment after opening, so it doesn't compete with starting playback.
   const storyTimer = setTimeout(() => {
+    if (source) return
     loadStoryboard(item.id, item.m, storyAbort.signal)
       .then((s) => (story = s))
       .catch(() => {
@@ -189,7 +195,9 @@
   }
 
   function onerror() {
-    if (mode === 'original') {
+    if (mode === 'original' && source) {
+      mode = 'failed'
+    } else if (mode === 'original') {
       // The webview can't decode it (e.g. HEVC without the Windows extension): convert it.
       offset = time > 0.5 ? time : 0
       pending = offset
@@ -578,9 +586,11 @@
     <div class="viewer-message vp-message">
       <Icon name="brokenImage" size={48} />
       <p>This video's format can't be played here.</p>
-      <button class="btn" onclick={onopenexternal}>
-        <Icon name="openExternal" size={20} /> Open in default player
-      </button>
+      {#if onopenexternal}
+        <button class="btn" onclick={onopenexternal}>
+          <Icon name="openExternal" size={20} /> Open in default player
+        </button>
+      {/if}
     </div>
   {:else}
     <!-- svelte-ignore a11y_media_has_caption -->
@@ -725,9 +735,11 @@
         {#if rate !== 1}
           <button class="vp-rate" title="Playback speed" onclick={() => openMenu(true)}>{rate}×</button>
         {/if}
-        <button class="icon-btn" title="Copy this frame" onclick={() => act.copyVideoFrame(item.id, current)}>
-          <Icon name="contentCopy" size={22} />
-        </button>
+        {#if !source}
+          <button class="icon-btn" title="Copy this frame" onclick={() => act.copyVideoFrame(item.id, current)}>
+            <Icon name="contentCopy" size={22} />
+          </button>
+        {/if}
         <button
           class="icon-btn"
           title="Playback settings"

@@ -32,8 +32,11 @@ type Home = {
   places: Place[]
   /** Absent while the Archive isn't shared. */
   archive?: Item[]
+  /** Memories (on this day, trips...); empty when switched off. */
+  memories?: Memory[]
   transcode: boolean
 }
+type Memory = { id: number; title: string; start: string; end: string; coverId: number | null; coverM: number | null; count: number }
 type Details = {
   id: number
   name: string
@@ -46,7 +49,7 @@ type Details = {
   canConvert: boolean
 }
 type Hello = { name: string; pinRequired: boolean; authorized: boolean }
-type ListSpec = { scope: 'all' | 'favorites' | 'videos' | 'album' | 'place' | 'archive'; id?: number; title: string }
+type ListSpec = { scope: 'all' | 'favorites' | 'videos' | 'album' | 'place' | 'archive' | 'memory'; id?: number; title: string }
 
 const app = document.getElementById('app') as HTMLElement
 
@@ -421,6 +424,12 @@ async function homeScreen(): Promise<Screen> {
     h('div', { className: 'header' }, h('h1', null, home.name), h('span', { className: 'count' }, plural(home.total, 'photo or video', 'photos and videos'))),
     home.total === 0 ? h('p', { className: 'message' }, 'Nothing to show yet. Add folders in Memora on the PC.') : null,
     row(
+      'Memories',
+      (home.memories || []).map((m) =>
+        coverTile(m.coverId, m.coverM, m.title, memoryDates(m), () => openViewer({ scope: 'memory', id: m.id, title: m.title }, -1, true)),
+      ),
+    ),
+    row(
       'Recent',
       home.total
         ? [moreTile('See all', () => openList(all))].concat(home.recent.map((i) => itemTile(i, () => openViewer(all, i.id))))
@@ -514,14 +523,28 @@ function browserPlays(d: Details, probe: HTMLVideoElement): boolean {
   return containerOk && audioOk && probe.canPlayType(type) !== ''
 }
 
-async function openViewer(spec: ListSpec, id: number) {
+/** `slideshow`: start playing right away (memories). */
+async function openViewer(spec: ListSpec, id: number, slideshow = false) {
   const items = await loadList(spec).catch(showError)
-  if (!items) return
+  if (!items || !items.length) return
   const start = items.findIndex((i) => i.id === id)
-  push(viewer(items, start < 0 ? 0 : start))
+  push(viewer(items, start < 0 ? 0 : start, slideshow))
 }
 
-function viewer(items: Item[], startIndex: number): Screen {
+/** "18 Nov 2023" or "2 Oct 2023 – 6 Oct 2023" (old TV browsers may lack formatRange). */
+function memoryDates(m: Memory): string {
+  const fmt = (d: string) => {
+    const [y, mo, day] = d.split('-').map(Number)
+    try {
+      return new Date(y, mo - 1, day).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
+    } catch (_) {
+      return d
+    }
+  }
+  return m.start === m.end ? fmt(m.start) : fmt(m.start) + ' – ' + fmt(m.end)
+}
+
+function viewer(items: Item[], startIndex: number, startSlideshow = false): Screen {
   const touch = 'ontouchstart' in window
   let index = startIndex
   let interval = savedInterval()
@@ -831,7 +854,8 @@ function viewer(items: Item[], startIndex: number): Screen {
   }
 
   show(startIndex)
-  setTimeout(() => {
+  if (startSlideshow) setSlideshow(true)
+  else setTimeout(() => {
     if (!touch) toast(items[index].v ? '◀ ▶ seek · OK play/pause · CH+/CH− next' : '◀ ▶ browse · OK slideshow · ▼ speed · ▲ info')
   }, 600)
 

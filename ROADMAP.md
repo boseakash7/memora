@@ -35,8 +35,8 @@ priorities change as people try the app. Have an idea? [Open an issue](../../iss
 
 ## Later (v0.4+)
 - [ ] Signed installer, so Windows SmartScreen doesn't warn (moved from v0.2: the build already signs the app and installer once a code-signing certificate is set up; the certificate itself is still to get)
-- [ ] Private vault ("Locked folder"): encrypted on disk, password + recovery key, never shown on the LAN or TV
-- [ ] Memories: "on this day" and auto-generated highlight collections
+- [x] Private vault ("Locked folder"): encrypted on disk, password + recovery key, never shown on the LAN or TV
+- [x] Memories: "on this day", trips, people and best-of collections, shown above Photos, on their own page and on the TV
 - [ ] Bulk edit: fix dates, locations and captions
 - [ ] Basic editing (crop, rotate, adjust), saved non-destructively
 - [ ] Windows Hello unlock for the vault

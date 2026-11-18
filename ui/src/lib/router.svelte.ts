@@ -2,6 +2,7 @@
 
 export const ROUTES = [
   'photos',
+  'memories',
   'explore',
   'favorites',
   'archive',
@@ -14,6 +15,7 @@ export const ROUTES = [
   'map',
   'utilities',
   'duplicates',
+  'vault',
   'trash',
   'search',
   'settings',

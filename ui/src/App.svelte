@@ -11,6 +11,7 @@
   import { isBusy, library, watchLibrary, indexingStep } from './lib/library.svelte'
   import { goSearch, router, type Route } from './lib/router.svelte'
   import { applyTheme } from './lib/theme'
+  import { applyAnimations } from './lib/motion.svelte'
   import { appWindow, inTauri, showSystemMenu, titleBarContextMenu } from './lib/window.svelte'
   import AlbumView from './pages/AlbumView.svelte'
   import Albums from './pages/Albums.svelte'
@@ -28,9 +29,12 @@
   import Trash from './pages/Trash.svelte'
   import Archive from './pages/Archive.svelte'
   import Utilities from './pages/Utilities.svelte'
+  import Memories from './pages/Memories.svelte'
+  import Vault from './pages/Vault.svelte'
 
   const nav: { route: Route; label: string; icon: IconName }[] = [
     { route: 'photos', label: 'Photos', icon: 'photo' },
+    { route: 'memories', label: 'Memories', icon: 'memories' },
     { route: 'explore', label: 'Explore', icon: 'explore' },
     { route: 'favorites', label: 'Favorites', icon: 'star' },
     { route: 'archive', label: 'Archive', icon: 'archive' },
@@ -42,7 +46,7 @@
   watchLibrary()
 
   /** Routes whose content is a photo grid, which fills the whole content area. */
-  const FILL: Route[] = ['photos', 'favorites', 'archive', 'trash', 'album', 'place', 'person', 'map', 'search']
+  const FILL: Route[] = ['photos', 'favorites', 'archive', 'trash', 'album', 'place', 'person', 'map', 'search', 'vault']
 
   /** Sidebar entry that stays highlighted on a page. */
   const sidebarFor: Partial<Record<Route, Route>> = {
@@ -53,6 +57,7 @@
     people: 'explore',
     person: 'explore',
     duplicates: 'utilities',
+    vault: 'utilities',
   }
 
   // ---------- search box ----------
@@ -128,11 +133,14 @@
     document.documentElement.classList.toggle('window-inactive', !appWindow.focused)
   })
 
-  // Apply the saved theme on startup.
+  // Apply the saved theme and animation level on startup.
   $effect(() => {
     api.settings
       .get()
-      .then((s) => applyTheme(s.theme))
+      .then((s) => {
+        applyTheme(s.theme)
+        applyAnimations(s.animations)
+      })
       .catch(() => {})
   })
 </script>
@@ -222,6 +230,10 @@
       <Utilities />
     {:else if router.route === 'duplicates'}
       <Duplicates />
+    {:else if router.route === 'vault'}
+      <Vault />
+    {:else if router.route === 'memories'}
+      <Memories />
     {:else if router.route === 'settings'}
       <Settings />
     {/if}

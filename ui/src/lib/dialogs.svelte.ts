@@ -13,6 +13,12 @@ export type DialogState =
       kind: 'prompt'
       title: string
       label: string
+      /** Shown above the field. */
+      message?: string
+      /** A password field (typed text hidden, not trimmed). */
+      password?: boolean
+      /** Shown under the field, e.g. "Wrong password". */
+      error?: string
       value: string
       confirmLabel: string
       resolve: (value: string | null) => void
@@ -35,6 +41,9 @@ export function confirmDialog(opts: {
 export function promptDialog(opts: {
   title: string
   label: string
+  message?: string
+  password?: boolean
+  error?: string
   value?: string
   confirmLabel: string
 }): Promise<string | null> {

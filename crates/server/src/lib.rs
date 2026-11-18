@@ -10,9 +10,11 @@ mod error;
 mod explore;
 pub mod lan;
 mod media;
+mod memories;
 mod organize;
 mod people;
 mod stream;
+mod vault;
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
@@ -110,6 +112,8 @@ pub async fn start_local(library: Library, ai: photos_ml::Ai) -> std::io::Result
     tracing::info!("local server listening on http://{addr}");
     // Resume sharing if it was on last time. Problems (port in use) show in Settings.
     state.lan.apply(&state).await;
+    vault::spawn_auto_lock(state.clone());
+    memories::spawn_refresh(state.clone());
     Ok(LocalServer { addr, token, state })
 }
 

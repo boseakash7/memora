@@ -1,6 +1,8 @@
 <script lang="ts">
   import MediaPage from '../components/MediaPage.svelte'
-  import { api } from '../lib/api'
+  import MemoriesCarousel from '../components/MemoriesCarousel.svelte'
+  import MemoryPlayer from '../components/MemoryPlayer.svelte'
+  import { api, type MemoryCard } from '../lib/api'
   import Icon from '../lib/Icon.svelte'
   import { isBusy, library } from '../lib/library.svelte'
   import { go } from '../lib/router.svelte'
@@ -15,9 +17,30 @@
   })
 
   const busy = $derived(isBusy(library.status))
+
+  /** Up to 12 memories for the row above the timeline: on this day first, then unseen ones. */
+  let memories = $state<MemoryCard[]>([])
+  let playing = $state<number | null>(null)
+  const MEMORIES_HEIGHT = 268
+
+  function loadMemories() {
+    api.memories
+      .list()
+      .then((m) => (memories = m.slice(0, 12)))
+      .catch(() => {})
+  }
+  loadMemories()
 </script>
 
-<MediaPage query={{}}>
+{#snippet carousel()}
+  <MemoriesCarousel {memories} onplay={(id) => (playing = id)} />
+{/snippet}
+
+{#if playing !== null}
+  <MemoryPlayer id={playing} onclose={() => ((playing = null), loadMemories())} onchanged={loadMemories} />
+{/if}
+
+<MediaPage query={{}} top={memories.length > 0 ? carousel : undefined} topHeight={MEMORIES_HEIGHT}>
   {#snippet empty()}
     {#if folderCount === 0}
       <div class="empty">

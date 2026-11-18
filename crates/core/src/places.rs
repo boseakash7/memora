@@ -30,7 +30,7 @@ fn geocoder() -> &'static ReverseGeocoder {
     GEOCODER.get_or_init(ReverseGeocoder::new)
 }
 
-fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+pub(crate) fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     let (p1, p2) = (lat1.to_radians(), lat2.to_radians());
     let dlat = p2 - p1;
     let dlon = (lon2 - lon1).to_radians();

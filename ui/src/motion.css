@@ -1,0 +1,487 @@
+/* =====================================================================
+   Motion. <html data-motion="high | medium | none"> is set from the
+   Animations setting (lib/motion.svelte.ts). Everything below reads the
+   tokens, so the levels differ only in timing, distance and a few extras.
+   Loaded after app.css, so these transitions replace the plain ones there.
+   ===================================================================== */
+
+:root,
+:root[data-motion='medium'] {
+  --m-fast: 110ms;
+  --m-base: 170ms;
+  --m-slow: 240ms;
+  /* Material 3 standard and emphasized-decelerate curves. */
+  --m-ease: cubic-bezier(0.2, 0, 0, 1);
+  --m-ease-out: cubic-bezier(0.05, 0.7, 0.1, 1);
+  --m-spring: var(--m-ease);
+  --m-rise: 6px;
+  --m-pop: 0.97;
+  --m-press: 0.97;
+  --m-stagger: 0ms;
+  --m-lift: 0px;
+  --m-blur: 0px;
+}
+
+:root[data-motion='high'] {
+  --m-fast: 150ms;
+  --m-base: 240ms;
+  --m-slow: 420ms;
+  --m-spring: cubic-bezier(0.34, 1.45, 0.64, 1);
+  --m-rise: 16px;
+  --m-pop: 0.9;
+  --m-press: 0.94;
+  --m-stagger: 32ms;
+  --m-lift: -3px;
+  --m-blur: 6px;
+}
+
+:root[data-motion='none'] {
+  --m-fast: 0ms;
+  --m-base: 0ms;
+  --m-slow: 0ms;
+  --m-rise: 0px;
+  --m-pop: 1;
+  --m-press: 1;
+  --m-stagger: 0ms;
+  --m-lift: 0px;
+  --m-blur: 0px;
+}
+
+/* None: stop every animation and transition, but keep loading spinners turning. */
+:root[data-motion='none'] *,
+:root[data-motion='none'] *::before,
+:root[data-motion='none'] *::after {
+  animation-duration: 0.01ms !important;
+  animation-delay: 0s !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  transition-delay: 0s !important;
+  scroll-behavior: auto !important;
+}
+
+:root[data-motion='none'] :is(.spinner, .vp-spinner) {
+  animation-duration: 0.8s !important;
+  animation-iteration-count: infinite !important;
+}
+
+@keyframes m-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+/* `to` is left out on purpose: the element ends at its own style, and with
+   `backwards` fill no transform is kept afterwards (a kept transform would
+   trap the position: fixed viewer inside the page). */
+@keyframes m-rise {
+  from {
+    opacity: 0;
+    transform: translateY(var(--m-rise));
+  }
+}
+
+@keyframes m-drop {
+  from {
+    opacity: 0;
+    transform: translateY(calc(var(--m-rise) * -1));
+  }
+}
+
+@keyframes m-pop {
+  from {
+    opacity: 0;
+    transform: translateY(var(--m-rise)) scale(var(--m-pop));
+  }
+}
+
+@keyframes m-zoom {
+  from {
+    opacity: 0;
+    transform: scale(var(--m-pop));
+  }
+}
+
+@keyframes m-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(calc(var(--m-rise) * 2));
+  }
+}
+
+@keyframes m-icon-pop {
+  40% {
+    transform: scale(1.18);
+  }
+}
+
+/* ---------- pages ---------- */
+
+.content > :is(.page, .media-page, .map-page) {
+  animation: m-rise var(--m-slow) var(--m-ease-out) backwards;
+}
+
+/* High: the parts of a page come in one after another. */
+:root[data-motion='high'] .content > .page {
+  animation-name: m-fade;
+}
+
+:root[data-motion='high'] .content > .page > *,
+:root[data-motion='high']
+  :is(.album-grid, .people-grid, .people-row, .tile-grid, .memories-grid, .memories-row, .dup-items)
+  > * {
+  animation: m-rise var(--m-slow) var(--m-ease-out) backwards;
+  animation-delay: calc(var(--m-stagger) * var(--n, 12));
+}
+
+:is(.page, .album-grid, .people-grid, .people-row, .tile-grid, .memories-grid, .memories-row, .dup-items) {
+  & > :nth-child(1) {
+    --n: 0;
+  }
+  & > :nth-child(2) {
+    --n: 1;
+  }
+  & > :nth-child(3) {
+    --n: 2;
+  }
+  & > :nth-child(4) {
+    --n: 3;
+  }
+  & > :nth-child(5) {
+    --n: 4;
+  }
+  & > :nth-child(6) {
+    --n: 5;
+  }
+  & > :nth-child(7) {
+    --n: 6;
+  }
+  & > :nth-child(8) {
+    --n: 7;
+  }
+  & > :nth-child(9) {
+    --n: 8;
+  }
+  & > :nth-child(10) {
+    --n: 9;
+  }
+  & > :nth-child(11) {
+    --n: 10;
+  }
+}
+
+/* ---------- buttons, navigation ---------- */
+
+.btn,
+.icon-btn,
+.nav-item,
+.library-summary,
+.toast-action,
+.picker-row,
+.context-menu-item,
+.face-chip-main,
+.memories-arrow {
+  transition:
+    background-color var(--m-fast) ease,
+    color var(--m-fast) ease,
+    border-color var(--m-fast) ease,
+    box-shadow var(--m-base) ease,
+    filter var(--m-fast) ease,
+    opacity var(--m-fast) ease,
+    transform var(--m-base) var(--m-spring);
+}
+
+.btn:active:not(:disabled),
+.nav-item:active,
+.picker-row:active:not(:disabled) {
+  transform: scale(var(--m-press));
+  transition-duration: var(--m-fast);
+}
+
+.icon-btn:active:not(:disabled) {
+  transform: scale(calc(var(--m-press) - 0.04));
+  transition-duration: var(--m-fast);
+}
+
+:root[data-motion='high'] .btn.primary:hover:not(:disabled) {
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+:root[data-motion='high'] .nav-item.active svg {
+  animation: m-icon-pop var(--m-slow) var(--m-spring);
+}
+
+.progress-chip {
+  animation: m-pop var(--m-slow) var(--m-spring) backwards;
+}
+
+.selection-bar {
+  animation: m-drop var(--m-base) var(--m-ease-out) backwards;
+}
+
+/* ---------- switches ---------- */
+
+.slider {
+  transition: background-color var(--m-base) ease;
+}
+
+.slider::before {
+  transition:
+    transform var(--m-slow) var(--m-spring),
+    width var(--m-base) var(--m-ease);
+}
+
+/* High: the knob stretches while pressed, like Windows toggles. */
+:root[data-motion='high'] .switch:active .slider::before {
+  width: 22px;
+}
+
+:root[data-motion='high'] .switch:active input:checked + .slider::before {
+  transform: translateX(16px);
+}
+
+/* ---------- the photo grid ---------- */
+
+.cell img {
+  animation: m-fade var(--m-base) ease-out backwards;
+  transition:
+    transform var(--m-base) var(--m-spring),
+    filter var(--m-fast) ease,
+    border-radius var(--m-base) ease;
+}
+
+:root[data-motion='high'] .cell:not(.selected):hover img {
+  transform: scale(1.035);
+}
+
+.cell-check,
+.day-check {
+  transition:
+    opacity var(--m-fast) ease,
+    transform var(--m-base) var(--m-spring);
+}
+
+:root[data-motion='high'] .cell-check.on svg {
+  animation: m-icon-pop var(--m-slow) var(--m-spring);
+}
+
+/* ---------- cards ---------- */
+
+.tile,
+.album-card,
+.person-card,
+.memory-card {
+  transition:
+    background-color var(--m-fast) ease,
+    border-color var(--m-fast) ease,
+    box-shadow var(--m-base) ease,
+    opacity var(--m-base) ease,
+    transform var(--m-base) var(--m-ease);
+}
+
+.album-cover img,
+.person-face img {
+  transition:
+    filter var(--m-fast) ease,
+    transform var(--m-slow) var(--m-ease);
+}
+
+.memory-card img {
+  transition: transform var(--m-slow) var(--m-ease);
+}
+
+:root[data-motion='high'] :is(.tile, .album-card, .memory-card):hover {
+  transform: translateY(var(--m-lift));
+}
+
+:root[data-motion='high'] :is(.tile, .memory-card):hover {
+  box-shadow: 0 6px 18px rgb(0 0 0 / 0.16);
+}
+
+:root[data-motion='high'] .album-card:hover .album-cover img,
+:root[data-motion='high'] .person-card:hover .person-face img {
+  transform: scale(1.05);
+}
+
+:root[data-motion='medium'] .memory-card:hover img {
+  transform: scale(1.02);
+}
+
+/* ---------- dialogs, menus ---------- */
+
+.modal-backdrop,
+.vp-keys-backdrop {
+  animation: m-fade var(--m-base) ease backwards;
+}
+
+:root[data-motion='high'] :is(.modal-backdrop, .vp-keys-backdrop) {
+  backdrop-filter: blur(var(--m-blur));
+}
+
+.modal,
+.vp-keys {
+  animation: m-pop var(--m-slow) var(--m-spring) backwards;
+}
+
+/* Grows out of the corner at the pointer (transform-origin set by ContextMenu). */
+.context-menu {
+  animation: m-zoom var(--m-base) var(--m-ease-out) backwards;
+}
+
+.vp-menu {
+  animation: m-rise var(--m-base) var(--m-ease-out) backwards;
+}
+
+/* ---------- viewer, players ---------- */
+
+.viewer,
+.memory-player {
+  animation: m-fade var(--m-base) var(--m-ease) backwards;
+}
+
+/* The photo settles in when the viewer opens (`opening` is on for its first half second);
+   after that Next / Previous slide instead (slidePhoto). */
+.viewer.opening .viewer-photo {
+  animation: m-zoom var(--m-slow) var(--m-ease-out) backwards;
+}
+
+/* A video's controls stay put: only the picture settles in, on opening and on paging. */
+.vp-video {
+  animation: m-zoom var(--m-slow) var(--m-ease-out) backwards;
+}
+
+/* One layer per photo, so the old and new one can overlap while sliding. */
+.viewer-slide {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr);
+  place-items: center;
+}
+
+.viewer-full {
+  transition: opacity var(--m-slow) ease;
+}
+
+.info-panel {
+  animation: m-slide-in var(--m-slow) var(--m-ease-out) backwards;
+}
+
+.viewer-bar,
+.vp-controls {
+  transition: opacity var(--m-slow) ease;
+}
+
+.viewer-nav {
+  transition:
+    opacity var(--m-base) ease,
+    background-color var(--m-fast) ease;
+}
+
+/* Memory slides fade in on top of the slow Ken Burns zoom. */
+.memory-media {
+  animation: m-fade var(--m-slow) ease backwards;
+}
+
+.memory-media.kenburns {
+  animation:
+    m-fade var(--m-slow) ease backwards,
+    kenburns 5.4s ease-out both;
+}
+
+.memory-media.kenburns.reverse {
+  animation:
+    m-fade var(--m-slow) ease backwards,
+    kenburns-out 5.4s ease-out both;
+}
+
+.memory-media.kenburns.paused {
+  animation-play-state: paused;
+}
+
+:root[data-motion='none'] .memory-media.kenburns {
+  animation: none;
+}
+
+/* ---------- theme switch (View Transitions crossfade) ---------- */
+
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: var(--m-slow);
+  animation-timing-function: var(--m-ease);
+}
+
+/* ---------- Settings: the animations bar ---------- */
+
+.segmented {
+  position: relative;
+  display: grid;
+  grid-auto-columns: 1fr;
+  grid-auto-flow: column;
+  max-width: 480px;
+  margin-top: 12px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  background: var(--bg-elev);
+}
+
+.segmented-thumb {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 4px;
+  width: calc((100% - 8px) / var(--count));
+  border-radius: 18px;
+  background: var(--accent);
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.2);
+  transform: translateX(calc(100% * var(--at)));
+  transition: transform var(--m-slow) var(--m-spring);
+}
+
+.segmented label {
+  position: relative;
+  display: grid;
+  place-items: center;
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 18px;
+  color: var(--fg-muted);
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color var(--m-base) ease;
+}
+
+.segmented label:hover {
+  color: var(--fg);
+}
+
+.segmented label.on {
+  color: var(--accent-fg);
+}
+
+.segmented input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.segmented label:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.small-note {
+  margin: 8px 0 0;
+  font-size: 13px;
+}
+
+.setting-sub {
+  margin-top: 24px;
+}
+
+.setting-sub h3 {
+  margin: 0 0 2px;
+  font-size: 14px;
+  font-weight: 500;
+}

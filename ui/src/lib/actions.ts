@@ -3,6 +3,8 @@
 
 import {
   api,
+  ApiError,
+  clearWebCache,
   errorMessage,
   frameUrl,
   mediaUrl,
@@ -12,7 +14,8 @@ import {
   type TimelineItem,
 } from './api'
 import type { MenuEntry } from './contextMenu.svelte'
-import { confirmDialog } from './dialogs.svelte'
+import { confirmDialog, promptDialog } from './dialogs.svelte'
+import { go } from './router.svelte'
 import { toast } from './toast.svelte'
 
 /** The list the items are shown in. */
@@ -201,6 +204,75 @@ export const makeWallpaper = (c: ActionContext) =>
     toast('Desktop background set')
   })
 
+/**
+ * Ask for the locked folder's password until it opens. Returns false if cancelled, or if
+ * there is no locked folder yet (then the Locked folder page is opened to set one up).
+ */
+export async function ensureVaultUnlocked(): Promise<boolean> {
+  const state = await api.vault.state()
+  if (!state.exists) {
+    const ok = await confirmDialog({
+      title: 'Set up the locked folder',
+      message: 'Items in the locked folder are encrypted and open only in Memora with your password. Set it up first?',
+      confirmLabel: 'Set up',
+    })
+    if (ok) go('vault')
+    return false
+  }
+  if (state.unlocked) return true
+  let error: string | undefined
+  for (;;) {
+    const password = await promptDialog({
+      title: 'Unlock the locked folder',
+      label: 'Password',
+      password: true,
+      error,
+      confirmLabel: 'Unlock',
+    })
+    if (password === null) return false
+    try {
+      await api.vault.unlock(password)
+      return true
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 403) error = 'Wrong password. Try again.'
+      else throw e
+    }
+  }
+}
+
+/** Encrypt the items into the locked folder; the originals are deleted. */
+export const moveToVault = (c: ActionContext) =>
+  attempt(async () => {
+    const list = ids(c)
+    const one = list.length === 1
+    if (!(await ensureVaultUnlocked())) return
+    const ok = await confirmDialog({
+      title: one ? 'Move to the locked folder?' : `Move ${countLabel(list.length)} to the locked folder?`,
+      message:
+        'They are encrypted and open only in Memora with your password. They leave the library, Memories and ' +
+        'TV sharing, and the original files are deleted from their folder for good (not to the Recycle Bin). ' +
+        'To get them back, use Move out on the Locked folder page.',
+      confirmLabel: 'Move',
+    })
+    if (!ok) return
+    const hint = toast(one ? 'Moving to the locked folder…' : `Moving ${countLabel(list.length)} to the locked folder…`, {
+      persist: true,
+    })
+    const result = await api.vault.moveIn(list).finally(hint.dismiss)
+    // Pictures shown before the move may be in the webview's cache; clear it.
+    if (result.moved > 0) {
+      c.onremoved?.()
+      await clearWebCache()
+    }
+    if (result.failed.length > 0) {
+      toast(`${result.moved ? `Moved ${countLabel(result.moved)}. ` : ''}Not moved: ${result.failed[0]}`, { error: true })
+    } else {
+      toast(one ? 'Moved to the locked folder' : `Moved ${countLabel(result.moved)} to the locked folder`, {
+        action: { label: 'Open', run: () => go('vault') },
+      })
+    }
+  })
+
 // ---------- menus ----------
 
 export function archiveEntry(c: ActionContext): MenuEntry {
@@ -265,6 +337,10 @@ export function itemMenu(c: ActionContext): { header?: string; entries: MenuEntr
   } else {
     entries.push({ label: 'Copy file paths', icon: 'link', run: () => copyPaths(c) })
   }
-  entries.push('separator', { label: 'Move to trash', icon: 'trash', shortcut: 'Delete', run: () => moveToTrash(c) })
+  entries.push(
+    'separator',
+    { label: 'Move to locked folder', icon: 'lock', run: () => moveToVault(c) },
+    { label: 'Move to trash', icon: 'trash', shortcut: 'Delete', run: () => moveToTrash(c) },
+  )
   return { header, entries }
 }

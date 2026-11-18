@@ -6,6 +6,8 @@
   let el = $state<HTMLDivElement>()
   let left = $state(0)
   let top = $state(0)
+  let originX = $state<'left' | 'right'>('left')
+  let originY = $state<'top' | 'bottom'>('top')
   /** Where focus was before the menu opened, to give it back on close. */
   let returnFocus: HTMLElement | null = null
 
@@ -18,12 +20,19 @@
     returnFocus = document.activeElement as HTMLElement | null
     left = m.x
     top = m.y
+    originX = 'left'
+    originY = 'top'
     tick().then(() => {
       if (!el || contextMenu.current !== m) return
-      const { width, height } = el.getBoundingClientRect()
+      // Layout size, not the bounding box: the opening animation scales the menu.
+      const width = el.offsetWidth
+      const height = el.offsetHeight
       const margin = 4
       if (m.x + width > innerWidth - margin) left = Math.max(margin, m.x - width)
       if (m.y + height > innerHeight - margin) top = Math.max(margin, innerHeight - margin - height)
+      // Grow out of the corner at the pointer.
+      originX = left < m.x ? 'right' : 'left'
+      originY = top < m.y ? 'bottom' : 'top'
       if (m.keyboard) items()[0]?.focus()
       else el.focus()
     })
@@ -89,6 +98,7 @@
     bind:this={el}
     style:left="{left}px"
     style:top="{top}px"
+    style:transform-origin="{originY} {originX}"
     {onkeydown}
     oncontextmenu={(e) => e.preventDefault()}
   >

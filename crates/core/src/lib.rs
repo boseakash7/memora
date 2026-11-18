@@ -15,6 +15,7 @@ pub mod hash;
 pub mod heif;
 pub mod library;
 pub mod media;
+pub mod memories;
 pub mod metadata;
 pub mod organize;
 pub mod paths;
@@ -29,6 +30,7 @@ pub mod storage;
 pub mod sync;
 pub mod thumbs;
 pub mod transcode;
+pub mod vault;
 
 pub use db::Db;
 pub use error::{Error, Result};

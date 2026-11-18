@@ -85,10 +85,12 @@ pub fn finish_move(paths: &AppPaths) {
     for name in OWN_FILES.iter().chain(["library.db", "library.db-wal", "library.db-shm", "dlna-requests.log"].iter()) {
         let _ = std::fs::remove_file(old.join(name));
     }
-    if let Err(e) = std::fs::remove_dir_all(old.join("cache"))
-        && e.kind() != std::io::ErrorKind::NotFound
-    {
-        tracing::warn!("cannot remove the old cache in {}: {e}", old.display());
+    for dir in ["cache", VAULT_DIR] {
+        if let Err(e) = std::fs::remove_dir_all(old.join(dir))
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!("cannot remove the old {dir} folder in {}: {e}", old.display());
+        }
     }
     // The folder we made for the data goes too, if nothing else is in it (never the home folder).
     if !same_dir(&old, &paths.home_dir) {
@@ -103,6 +105,8 @@ pub fn finish_move(paths: &AppPaths) {
 /// Small files of ours in the data folder that move with it. (`dlna-requests.log` starts
 /// fresh with each launch, so it is only removed.)
 const OWN_FILES: &[&str] = &["wallpaper.jpg"];
+/// The locked folder (see `vault`): encrypted, moves with the data.
+pub const VAULT_DIR: &str = "vault";
 
 fn same_dir(a: &Path, b: &Path) -> bool {
     let norm = |p: &Path| p.to_string_lossy().trim_end_matches(['\\', '/']).to_lowercase().replace('/', "\\");
@@ -195,36 +199,42 @@ fn is_empty_dir(dir: &Path) -> bool {
     }
 }
 
-/// Bytes the data folder's movable contents take (database + cache + our files).
+fn tree_size(dir: &Path) -> u64 {
+    WalkDir::new(dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .filter_map(|e| e.metadata().ok())
+        .map(|m| m.len())
+        .sum()
+}
+
+/// Bytes the data folder's movable contents take (database + cache + locked folder + our files).
 pub fn data_size(paths: &AppPaths) -> u64 {
     let db: u64 = ["library.db", "library.db-wal"]
         .iter()
         .filter_map(|n| std::fs::metadata(paths.data_dir.join(n)).ok())
         .map(|m| m.len())
         .sum();
-    let cache: u64 = WalkDir::new(&paths.cache_dir)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-        .filter_map(|e| e.metadata().ok())
-        .map(|m| m.len())
-        .sum();
-    db + cache
+    db + tree_size(&paths.cache_dir) + tree_size(&paths.data_dir.join(VAULT_DIR))
 }
 
 /// Copy the cache to `target`, skipping files already there with the same size (so a
 /// second pass only copies what changed). Calls `progress(bytes)` as it goes.
 /// Files that vanish while copying (cache entries being replaced) are skipped.
 pub fn copy_cache(paths: &AppPaths, target: &Path, progress: &mut dyn FnMut(u64)) -> Result<()> {
-    let to = target.join("cache");
-    std::fs::create_dir_all(&to)?;
-    for entry in WalkDir::new(&paths.cache_dir).min_depth(1) {
+    copy_tree(&paths.cache_dir, &target.join("cache"), progress)
+}
+
+fn copy_tree(from: &Path, to: &Path, progress: &mut dyn FnMut(u64)) -> Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in WalkDir::new(from).min_depth(1) {
         let entry = match entry {
             Ok(e) => e,
             Err(e) if e.io_error().is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) => continue,
             Err(e) => return Err(Error::Io(std::io::Error::other(e))),
         };
-        let rel = entry.path().strip_prefix(&paths.cache_dir).expect("inside the cache");
+        let rel = entry.path().strip_prefix(from).expect("inside the folder");
         let dest = to.join(rel);
         if entry.file_type().is_dir() {
             std::fs::create_dir_all(&dest)?;
@@ -249,6 +259,14 @@ pub fn copy_cache(paths: &AppPaths, target: &Path, progress: &mut dyn FnMut(u64)
 /// the same items, and switch `location.json` to it. The app must restart afterwards.
 pub fn finish_copy(db: &Db, paths: &AppPaths, target: &Path, progress: &mut dyn FnMut(u64)) -> Result<()> {
     copy_cache(paths, target, progress)?;
+    // The locked folder only changes on request, so it is copied once, here.
+    let vault = paths.data_dir.join(VAULT_DIR);
+    if vault.is_dir() {
+        copy_tree(&vault, &target.join(VAULT_DIR), progress)?;
+        if tree_size(&vault) != tree_size(&target.join(VAULT_DIR)) {
+            return Err(Error::invalid("the copy of the locked folder didn't check out"));
+        }
+    }
     let new_db = target.join("library.db");
     let _ = std::fs::remove_file(&new_db);
     let conn = db.conn()?;
@@ -281,6 +299,7 @@ pub fn abandon(target: &Path, paths: &AppPaths) {
         return;
     }
     let _ = std::fs::remove_dir_all(target.join("cache"));
+    let _ = std::fs::remove_dir_all(target.join(VAULT_DIR));
     for name in OWN_FILES.iter().chain(["library.db"].iter()) {
         let _ = std::fs::remove_file(target.join(name));
     }

@@ -4,6 +4,12 @@
 
   const cards: { href: string; icon: IconName; title: string; text: string }[] = [
     {
+      href: '#/vault',
+      icon: 'lock',
+      title: 'Locked folder',
+      text: 'Keep private photos and videos encrypted, behind a password.',
+    },
+    {
       href: '#/duplicates',
       icon: 'utilities',
       title: 'Duplicates',

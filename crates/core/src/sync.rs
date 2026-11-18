@@ -189,7 +189,7 @@ fn init_dir(root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn hide(dir: &Path) {
+pub(crate) fn hide(dir: &Path) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -292,6 +292,27 @@ pub(crate) fn record(conn: &Connection, recs: &[Rec]) -> Result<()> {
 pub(crate) fn record_media(conn: &Connection, ids: &[i64], field: &'static str, value: Value) -> Result<()> {
     let recs: Vec<Rec> = items(conn, ids)?.iter().map(|i| i.rec(field, "", value.clone())).collect();
     record(conn, &recs)
+}
+
+/// Forget what is recorded for items that are leaving the library for the locked folder, so
+/// their names and hashes leave this PC's `.memora` logs: the logs of their folders are
+/// rewritten on the next flush (kept marked until the folder can be written). Other PCs' logs
+/// can't be changed from here.
+pub(crate) fn forget_items(conn: &Connection, ids: &[i64]) -> Result<()> {
+    for it in items(conn, ids)? {
+        conn.prepare_cached("DELETE FROM sync_reg WHERE folder_id = ?1 AND item = ?2")?.execute(params![it.folder, it.rel])?;
+        conn.prepare_cached(
+            "DELETE FROM sync_reg WHERE folder_id = ?1 AND field = 'album_cover' AND json_extract(value, '$.p') = ?2",
+        )?
+        .execute(params![it.folder, it.rel])?;
+        conn.prepare_cached(
+            "DELETE FROM sync_outbox WHERE folder_id = ?1 AND (json_extract(line, '$.p') = ?2
+                 OR (json_extract(line, '$.f') = 'album_cover' AND json_extract(line, '$.v.p') = ?2))",
+        )?
+        .execute(params![it.folder, it.rel])?;
+        conn.prepare_cached("UPDATE folders SET log_dirty = 1 WHERE id = ?1")?.execute([it.folder])?;
+    }
+    Ok(())
 }
 
 /// Synced folders that already hold a value for an album or person.
@@ -535,7 +556,17 @@ pub fn remove_info(db: &Db, folder_id: i64) -> Result<Folder> {
     let dir = folder.path.join(DIR);
     let folder = disable(db, folder_id)?;
     if dir.is_dir() {
-        trash::delete(&dir).map_err(|e| Error::invalid(format!("cannot remove {}: {e}", dir.display())))?;
+        // The locked folder's items stay (they would be lost, or readable by no one, in the
+        // Recycle Bin): only the library info goes.
+        let vault = dir.join(crate::vault::PLACE_DIR);
+        let targets: Vec<PathBuf> = if vault.exists() {
+            fs::read_dir(&dir)?.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| *p != vault).collect()
+        } else {
+            vec![dir.clone()]
+        };
+        for t in targets {
+            trash::delete(&t).map_err(|e| Error::invalid(format!("cannot remove {}: {e}", t.display())))?;
+        }
     }
     Ok(folder)
 }
@@ -653,7 +684,9 @@ fn seed(conn: &Connection, folder_id: i64) -> Result<()> {
 pub fn flush(db: &Db) -> Result<()> {
     let pending: Vec<i64> = {
         let conn = db.conn()?;
-        let mut stmt = conn.prepare("SELECT DISTINCT folder_id FROM sync_outbox")?;
+        let mut stmt = conn.prepare(
+            "SELECT folder_id FROM sync_outbox UNION SELECT id FROM folders WHERE log_dirty = 1 AND sync = 1",
+        )?;
         stmt.query_map([], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?
     };
     for folder_id in pending {
@@ -677,11 +710,17 @@ fn flush_folder(db: &Db, folder_id: i64) -> Result<()> {
         let mut stmt = conn.prepare("SELECT id, line FROM sync_outbox WHERE folder_id = ?1 ORDER BY id")?;
         stmt.query_map([folder_id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<std::result::Result<_, _>>()?
     };
-    let Some(last) = rows.last().map(|r| r.0) else { return Ok(()) };
+    let dirty: bool = conn.query_row("SELECT log_dirty FROM folders WHERE id = ?1", [folder_id], |r| r.get(0))?;
+    if rows.is_empty() && !dirty {
+        return Ok(());
+    }
+    let last = rows.last().map_or(0, |r| r.0);
     let log = log_path(&root, &device);
-    if read_header(&log)?.is_none_or(|h| h.device != device) {
-        // No log yet (or an unusable one): write everything this PC knows for the folder.
+    if dirty || read_header(&log)?.is_none_or(|h| h.device != device) {
+        // No log yet (or an unusable one), or items left for the locked folder: write
+        // everything this PC knows for the folder.
         rewrite_log(&conn, folder_id, &root, &device)?;
+        conn.execute("UPDATE folders SET log_dirty = 0 WHERE id = ?1", [folder_id])?;
     } else {
         let mut text = String::new();
         for (_, line) in &rows {
@@ -1185,6 +1224,12 @@ pub fn status(db: &Db, folder: &Folder) -> Result<Option<Status>> {
 /// True if a changed path is inside a `.memora` folder.
 pub fn is_info_path(path: &Path) -> bool {
     path.components().any(|c| c.as_os_str().eq_ignore_ascii_case(DIR))
+}
+
+/// True if a path is inside a `.memoraault` (the locked folder's place in a watched folder).
+pub fn is_vault_path(path: &Path) -> bool {
+    let parts: Vec<_> = path.components().map(|c| c.as_os_str()).collect();
+    parts.windows(2).any(|w| w[0].eq_ignore_ascii_case(DIR) && w[1].eq_ignore_ascii_case(crate::vault::PLACE_DIR))
 }
 
 #[cfg(test)]

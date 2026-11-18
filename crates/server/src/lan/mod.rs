@@ -42,6 +42,8 @@ pub(crate) struct LanConfig {
     pub dlna: bool,
     /// Archived items in their own Archive row (TV page) and folder (DLNA).
     pub archive: bool,
+    /// A Memories row on the TV page.
+    pub memories: bool,
     pub device_name: String,
     pub pin: Option<String>,
     pub transcode: bool,
@@ -189,6 +191,7 @@ fn wanted_config(s: &Settings, uuid: &str, secret: &str) -> Option<LanConfig> {
         tv_page: s.lan_tv_page,
         dlna: s.lan_dlna,
         archive: s.lan_archive,
+        memories: s.memories,
         device_name: s.device_name.trim().to_owned(),
         pin: s.tv_pin.clone().filter(|p| !p.is_empty()),
         transcode: s.transcode_videos,

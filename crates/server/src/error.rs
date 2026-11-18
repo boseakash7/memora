@@ -27,6 +27,8 @@ impl IntoResponse for ApiError {
             ApiError::Core(E::FolderExists(_)) => StatusCode::CONFLICT,
             // A photo that can't be decoded is the file's problem, not the server's.
             ApiError::Core(E::Media(_)) => StatusCode::UNPROCESSABLE_ENTITY,
+            ApiError::Core(E::Locked) => StatusCode::LOCKED,
+            ApiError::Core(E::WrongPassword) => StatusCode::FORBIDDEN,
             ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
             ApiError::Busy(_) => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::Core(_) | ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,

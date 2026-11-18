@@ -1,5 +1,6 @@
 mod data_folder;
 mod desktop;
+mod vault_guard;
 mod window_chrome;
 
 use std::path::PathBuf;
@@ -151,6 +152,11 @@ pub fn run() {
                 version: env!("CARGO_PKG_VERSION"),
             });
             app.manage(Arc::new(server));
+            if let Some(window) = app.get_webview_window("main")
+                && let Ok(hwnd) = window.hwnd()
+            {
+                vault_guard::install(hwnd.0 as isize, library.clone());
+            }
             app.manage(library);
             app.manage(paths);
             Ok(())
@@ -162,6 +168,7 @@ pub fn run() {
             show_system_menu,
             set_max_button_rect,
             set_wallpaper,
+            vault_guard::clear_web_cache,
             data_folder::data_folder,
             data_folder::data_folder_target,
             data_folder::move_data_folder,

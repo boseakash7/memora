@@ -45,6 +45,8 @@ export type FolderProbe = {
 }
 
 export type Theme = 'system' | 'light' | 'dark'
+/** `auto`: high with a graphics card, medium without, none when Windows animations are off. */
+export type Animations = 'auto' | 'high' | 'medium' | 'none'
 
 /** One grid cell, newest first. Short keys keep big timelines small. */
 export type TimelineItem = {
@@ -245,6 +247,7 @@ export type LibraryStatus = {
 export type Settings = {
   deviceName: string
   theme: Theme
+  animations: Animations
   lanSharing: boolean
   lanPort: number
   /** While sharing: the web page for TV browsers and phones. */
@@ -257,7 +260,61 @@ export type Settings = {
   transcodeVideos: boolean
   mlEnabled: boolean
   mlUseGpu: boolean
+  /** Lock the locked folder after this many minutes without using it (1-60). */
+  vaultLockMinutes: number
+  /** Also lock it when Memora is minimized. */
+  vaultLockOnMinimize: boolean
+  /** Memories above the timeline and on their own page. */
+  memories: boolean
 }
+
+/** The locked folder: set up or not, locked or not. */
+export type VaultState = { exists: boolean; unlocked: boolean; count: number | null }
+
+/** An item in the locked folder (all of this is encrypted on disk). */
+export type VaultItem = {
+  id: string
+  name: string
+  originalPath: string
+  kind: 'photo' | 'video'
+  mime: string
+  size: number
+  mtime: number
+  width: number | null
+  height: number | null
+  durationMs: number | null
+  takenAt: string
+  tzOffset: number | null
+  camera: string | null
+  lat: number | null
+  lon: number | null
+  favorite: boolean
+  hash: string
+  addedAt: string
+  hasDisplay: boolean
+}
+
+/** What a move into or out of the locked folder did. */
+export type VaultMoved = { moved: number; failed: string[]; paths?: string[] }
+
+export type MemoryKind = 'day' | 'trip' | 'person' | 'year' | 'month'
+
+/** A memory card. */
+export type MemoryCard = {
+  id: number
+  kind: MemoryKind
+  title: string
+  /** First and last day, `YYYY-MM-DD`. */
+  start: string
+  end: string
+  coverId: number | null
+  coverM: number | null
+  count: number
+  seen: boolean
+  hidden: boolean
+}
+
+export type Memory = MemoryCard & { items: TimelineItem[] }
 
 /** Network sharing as it is running now. */
 export type LanStatus = {
@@ -412,6 +469,33 @@ export const api = {
   lan: () => request<LanStatus>('GET', '/lan'),
   mapPoints: () => request<MapPoint[]>('GET', '/map/points'),
   duplicates: () => request<DupGroup[]>('GET', '/duplicates'),
+  vault: {
+    state: () => request<VaultState>('GET', '/vault'),
+    /** Returns the recovery key, shown once. Leaves it unlocked. */
+    setup: (password: string) => request<{ recoveryKey: string }>('POST', '/vault/setup', { password }),
+    unlock: (password: string) => request<VaultState>('POST', '/vault/unlock', { password }),
+    /** Forgot the password: unlock with the recovery key and set a new password. */
+    recover: (recoveryKey: string, password: string) =>
+      request<VaultState>('POST', '/vault/recover', { recoveryKey, password }),
+    lock: () => request<VaultState>('POST', '/vault/lock'),
+    changePassword: (old: string, next: string) => request<void>('POST', '/vault/password', { old, new: next }),
+    newRecoveryKey: (password: string) => request<{ recoveryKey: string }>('POST', '/vault/recovery-key', { password }),
+    items: () => request<VaultItem[]>('GET', '/vault/items'),
+    moveIn: (ids: number[]) => request<VaultMoved>('POST', '/vault/move-in', { ids }),
+    moveOut: (ids: string[], path: string) => request<VaultMoved>('POST', '/vault/move-out', { ids, path }),
+    delete: (ids: string[]) => request<{ deleted: number }>('POST', '/vault/delete', { ids }),
+    setFavorite: (ids: string[], favorite: boolean) =>
+      request<{ changed: number }>('POST', '/vault/favorite', { ids, favorite }),
+  },
+  memories: {
+    list: (hidden = false) => request<MemoryCard[]>('GET', `/memories${hidden ? '?hidden=true' : ''}`),
+    get: (id: number) => request<Memory>('GET', `/memories/${id}`),
+    seen: (id: number) => request<void>('POST', `/memories/${id}/seen`),
+    setHidden: (id: number, hidden: boolean) => request<Memory>('PATCH', `/memories/${id}`, { hidden }),
+    remove: (id: number, ids: number[]) => request<Memory>('POST', `/memories/${id}/remove`, { ids }),
+    /** Work them out again now (normally done in the background). */
+    rebuild: () => request<void>('POST', '/memories/rebuild'),
+  },
   albums: {
     list: () => request<Album[]>('GET', '/albums'),
     get: (id: number) => request<Album>('GET', `/albums/${id}`),
@@ -484,6 +568,12 @@ export async function loadStoryboard(id: number, version: number, signal?: Abort
   return { url: URL.createObjectURL(await res.blob()), frames, interval, cols, rows }
 }
 
+/** A locked-folder file, decrypted on the fly (never cached by the webview). */
+export function vaultUrl(id: string, part: 'thumb' | 'display' | 'original'): string {
+  if (!resolved) throw new Error('server info not loaded yet')
+  return `${resolved.baseUrl}/api/vault/items/${id}/${part}?token=${resolved.token}`
+}
+
 /** Square picture of a face. */
 export function faceUrl(faceId: number): string {
   if (!resolved) throw new Error('server info not loaded yet')
@@ -519,6 +609,16 @@ export const dataFolder = {
   /** Copies, switches and restarts the app; rejects with a `DataMoveError`. */
   move: (path: string) => invoke<void>('move_data_folder', { path }),
   restart: () => invoke<void>('restart_app'),
+}
+
+/** Empty the webview's disk cache (after items moved to the locked folder, so no copy of
+ *  their pictures stays there). Best effort; nothing to do in the dev browser. */
+export async function clearWebCache(): Promise<void> {
+  try {
+    await invoke('clear_web_cache')
+  } catch {
+    // Not in the app, or the webview refused; the cache expires on its own.
+  }
 }
 
 /** Make a photo the Windows desktop background. */

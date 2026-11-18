@@ -35,6 +35,7 @@ fn config() -> LanConfig {
         tv_page: true,
         dlna: true,
         archive: true,
+        memories: true,
         device_name: "Test PC".into(),
         pin: None,
         transcode: true,
@@ -433,4 +434,47 @@ async fn dlna_media_files() {
     assert_eq!(&body[4..8], b"ftyp");
     let (_, details) = n.json(&format!("/tv/api/media/{clip}"), &[]).await;
     assert_eq!((details["videoCodec"].as_str(), details["audioCodec"].as_str()), (Some("hevc"), Some("opus")));
+}
+
+#[tokio::test]
+async fn memories_row() {
+    let n = net().await;
+    let (_, home) = n.json("/tv/api/home", &[]).await;
+    assert_eq!(home["memories"], json!([]));
+
+    // Four photos from a year ago today (rows only; the rules don't read the files).
+    let day = chrono::Local::now().date_naive() - chrono::Duration::days(365);
+    let ids: Vec<i64> = {
+        let conn = n.library.db().conn().unwrap();
+        (0..4)
+            .map(|i| {
+                conn.execute(
+                    "INSERT INTO media (folder_id, path, name, size, mtime, kind, mime, width, height, taken_at, phash, stage, added_at)
+                     SELECT id, path || '\\old' || ?1 || '.jpg', 'old.jpg', 1, 1000, 'photo', 'image/jpeg', 800, 600, ?2, ?3, 3, ''
+                     FROM folders LIMIT 1",
+                    (i, format!("{day}T1{i}:00:00"), i as i64 * 0x0F0F_0F0F_0F0F_i64),
+                )
+                .unwrap();
+                conn.last_insert_rowid()
+            })
+            .collect()
+    };
+    crate::memories::rebuild(&AppState::new(n.library.clone())).unwrap();
+    let (_, home) = n.json("/tv/api/home", &[]).await;
+    let row = home["memories"].as_array().unwrap();
+    assert_eq!(row.len(), 1, "{home}");
+    let id = row[0]["id"].as_i64().unwrap();
+    let (status, items) = n.json(&format!("/tv/api/items?scope=memory&id={id}"), &[]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(items.as_array().unwrap().len(), 4);
+
+    // An archived photo leaves the memory on the TV too.
+    photos_core::organize::archive(n.library.db(), &[ids[0]]).unwrap();
+    let (_, items) = n.json(&format!("/tv/api/items?scope=memory&id={id}"), &[]).await;
+    assert_eq!(items.as_array().unwrap().len(), 3);
+
+    *n.cfg.write().unwrap() = Arc::new(LanConfig { memories: false, ..config() });
+    let (_, home) = n.json("/tv/api/home", &[]).await;
+    assert_eq!(home["memories"], json!([]));
+    assert_eq!(n.json(&format!("/tv/api/items?scope=memory&id={id}"), &[]).await.0, StatusCode::NOT_FOUND);
 }

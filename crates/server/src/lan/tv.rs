@@ -209,6 +209,8 @@ struct Home {
     /// Newest archived items; absent while the Archive isn't shared.
     #[serde(skip_serializing_if = "Option::is_none")]
     archive: Option<Vec<TimelineItem>>,
+    /// Memories (on this day, trips...), when switched on.
+    memories: Vec<photos_core::memories::Card>,
     transcode: bool,
 }
 
@@ -252,6 +254,7 @@ async fn home(State(s): State<LanState>) -> Result<Json<Home>, ApiError> {
                 .map(|p| TvPlace { country_name: crate::dlna::countries::name(&p.country).to_owned(), place: p })
                 .collect(),
             archive,
+            memories: if cfg.memories { photos_core::memories::list(&db, false)? } else { Vec::new() },
             transcode: cfg.transcode,
         })
     })
@@ -261,7 +264,7 @@ async fn home(State(s): State<LanState>) -> Result<Json<Home>, ApiError> {
 
 #[derive(Deserialize)]
 struct ItemsQuery {
-    /// `all`, `favorites`, `videos`, `album`, `place` or `archive`.
+    /// `all`, `favorites`, `videos`, `album`, `place`, `archive` or `memory`.
     scope: String,
     id: Option<i64>,
 }
@@ -279,6 +282,13 @@ async fn items(State(s): State<LanState>, Query(q): Query<ItemsQuery>) -> Result
         "place" => query.place = Some(q.id.ok_or_else(|| ApiError::BadRequest("place id missing".into()))?),
         "archive" if s.cfg().archive => query.scope = Scope::Archive,
         "archive" => return Err(photos_core::Error::NotFound.into()),
+        "memory" if s.cfg().memories => {
+            let id = q.id.ok_or_else(|| ApiError::BadRequest("memory id missing".into()))?;
+            let db = s.app.library.db().clone();
+            // Its items are the visible ones (never archived or in the trash).
+            return Ok(Json(blocking(move || photos_core::memories::get(&db, id).map(|m| m.items)).await?));
+        }
+        "memory" => return Err(photos_core::Error::NotFound.into()),
         other => return Err(ApiError::BadRequest(format!("unknown list: {other}"))),
     }
     let db = s.app.library.db().clone();

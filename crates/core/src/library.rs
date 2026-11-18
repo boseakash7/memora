@@ -22,7 +22,7 @@ use crate::media::{MEDIA_COLUMNS, Media, Stage};
 use crate::metadata::{self, DATE_FORMAT, Metadata};
 use crate::scan::{self, Change};
 use crate::places::{self, PlaceName};
-use crate::{AppPaths, Result, backup, hash, organize, semantic, snapshot, sync, thumbs};
+use crate::{AppPaths, Result, backup, hash, organize, semantic, snapshot, sync, thumbs, vault};
 
 /// Indexing progress, pushed to the UI.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -84,6 +84,7 @@ struct Inner {
     watched: Mutex<HashSet<PathBuf>>,
     stop: AtomicBool,
     semantic: semantic::Index,
+    vault: vault::Vault,
     /// Work for the library-info thread (`SYNC_*` bits), see [`crate::sync`].
     sync_work: (Mutex<u8>, Condvar),
 }
@@ -104,6 +105,12 @@ impl Library {
     /// (which picks up anything that changed while the app was closed).
     pub fn start(db: Db, paths: AppPaths) -> Result<Library> {
         let (tx, rx) = mpsc::channel();
+        let vault_dir = paths.data_dir.join(crate::storage::VAULT_DIR);
+        // Locked items are kept next to the photos, in each watched folder's `.memora\vault`.
+        let roots_db = db.clone();
+        let vault = vault::Vault::with_roots(&vault_dir, move || {
+            crate::folders::list(&roots_db).map(|f| f.into_iter().map(|f| f.path).collect()).unwrap_or_default()
+        });
         let inner = Arc::new(Inner {
             db,
             paths,
@@ -118,6 +125,7 @@ impl Library {
             watched: Mutex::new(HashSet::new()),
             stop: AtomicBool::new(false),
             semantic: semantic::Index::default(),
+            vault,
             sync_work: (Mutex::new(SYNC_READ | SYNC_APPLY), Condvar::new()),
         });
 
@@ -167,6 +175,25 @@ impl Library {
     /// CLIP vectors for searching by what is in the pictures.
     pub fn semantic(&self) -> &semantic::Index {
         &self.inner.semantic
+    }
+
+    /// The locked folder.
+    pub fn vault(&self) -> &vault::Vault {
+        &self.inner.vault
+    }
+
+    /// Move items into the locked folder (see [`vault::move_in`]). Then this PC's `.memora`
+    /// logs and index snapshots are rewritten without them right away.
+    pub fn move_to_vault(&self, ids: &[i64]) -> Result<vault::Moved> {
+        let report = vault::move_in(&self.inner.db, &self.inner.paths, &self.inner.vault, ids)?;
+        if report.moved > 0 {
+            self.inner.semantic.reset();
+            if let Err(e) = sync::flush(&self.inner.db).and_then(|_| snapshot::write_changed(&self.inner.db)) {
+                tracing::warn!("library info not rewritten yet after moving to the locked folder: {e}");
+            }
+            self.notify_changed();
+        }
+        Ok(report)
     }
 
     /// Recognition made progress: update the counts (throttled). `changed` also tells open
@@ -911,7 +938,10 @@ fn on_fs_events(inner: &Weak<Inner>, res: DebounceEventResult) {
                     continue;
                 }
                 if ev.paths.iter().any(|p| sync::is_info_path(p)) {
-                    inner.kick_sync(SYNC_READ);
+                    // The locked folder's files aren't library info.
+                    if !ev.paths.iter().all(|p| sync::is_vault_path(p)) {
+                        inner.kick_sync(SYNC_READ);
+                    }
                     continue;
                 }
                 let paths = &ev.paths;

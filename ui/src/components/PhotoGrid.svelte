@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { untrack } from 'svelte'
+  import { untrack, type Snippet } from 'svelte'
   import { mediaUrl, type TimelineItem } from '../lib/api'
   import { dayLabel, formatDuration } from '../lib/dates'
   import Icon from '../lib/Icon.svelte'
@@ -13,6 +13,9 @@
     ontoggle,
     ontoggleday,
     onmenu,
+    thumbUrl = (item) => mediaUrl(item.id, 'thumb', item.m),
+    top,
+    topHeight = 0,
   }: {
     items: TimelineItem[]
     /** Ids of the selected items. */
@@ -24,7 +27,16 @@
     ontoggleday: (start: number, end: number) => void
     /** Right-click (or Shift+F10 / Menu key) on an item. */
     onmenu?: (index: number, e: MouseEvent) => void
+    /** Thumbnail address of an item (the locked folder has its own). */
+    thumbUrl?: (item: TimelineItem) => string
+    /** Shown above the first day and scrolls with the grid (Memories). */
+    top?: Snippet
+    /** Height of `top` in px. */
+    topHeight?: number
   } = $props()
+
+  /** Grid positions are below the `top` band. */
+  const pad = $derived(top ? topHeight : 0)
 
   const selecting = $derived(selected.size > 0)
 
@@ -66,9 +78,10 @@
   const layout: Layout = $derived(justify(items, width))
   const visible = $derived.by(() => {
     const blocks = layout.blocks
-    const start = firstBlockAfter(blocks, scrollTop - OVERSCAN)
+    const at = scrollTop - pad
+    const start = firstBlockAfter(blocks, at - OVERSCAN)
     const out = []
-    for (let i = start; i < blocks.length && blocks[i].top < scrollTop + viewport + OVERSCAN; i++) {
+    for (let i = start; i < blocks.length && blocks[i].top < at + viewport + OVERSCAN; i++) {
       out.push(blocks[i])
     }
     return out
@@ -79,15 +92,15 @@
   let anchor: { id: number; offset: number } | null = null
 
   function rememberAnchor() {
-    if (scrollTop < 40) {
+    if (scrollTop < 40 + pad) {
       anchor = null // at the top: let new photos push in
       return
     }
     const blocks = layout.blocks
-    for (let i = firstBlockAfter(blocks, scrollTop); i < blocks.length; i++) {
+    for (let i = firstBlockAfter(blocks, scrollTop - pad); i < blocks.length; i++) {
       const b = blocks[i]
       if (b.kind === 'row') {
-        anchor = { id: items[b.cells[0].index].id, offset: scrollTop - b.top }
+        anchor = { id: items[b.cells[0].index].id, offset: scrollTop - pad - b.top }
         return
       }
     }
@@ -100,7 +113,7 @@
       const index = items.findIndex((it) => it.id === anchor!.id)
       if (index < 0) return
       const block = l.blocks[l.rowOfItem[index]]
-      const target = Math.max(0, block.top + anchor.offset)
+      const target = Math.max(0, block.top + pad + anchor.offset)
       if (Math.abs(target - scroller.scrollTop) > 1) {
         scroller.scrollTop = target
         scrollTop = target
@@ -113,16 +126,17 @@
     rememberAnchor()
   }
 
-  function seek(top: number) {
-    scroller.scrollTop = top
+  function seek(y: number) {
+    scroller.scrollTop = y + pad
   }
 
   /** Scroll so an item is visible (used when closing the viewer). */
   export function reveal(index: number) {
     const block = layout.blocks[layout.rowOfItem[index]]
     if (!block) return
-    if (block.top < scrollTop || block.top + block.height > scrollTop + viewport) {
-      scroller.scrollTop = Math.max(0, block.top - viewport / 3)
+    const y = block.top + pad
+    if (y < scrollTop || y + block.height > scrollTop + viewport) {
+      scroller.scrollTop = Math.max(0, y - viewport / 3)
     }
   }
 
@@ -142,13 +156,16 @@
 
 <div class="grid-wrap" class:selecting>
   <div class="grid-scroller" bind:this={scroller} {onscroll}>
-    <div class="grid-canvas" style:height="{layout.height}px">
+    <div class="grid-canvas" style:height="{layout.height + pad}px">
+      {#if top}
+        <div class="grid-top" style:height="{pad}px">{@render top()}</div>
+      {/if}
       {#each visible as block (block.key)}
         {#if block.kind === 'header'}
           {@const range = dayRanges.get(block.day)}
           <h2
             class="day-header"
-            style:top="{block.top}px"
+            style:top="{block.top + pad}px"
             style:left="{block.left}px"
             style:width="{block.width}px"
             style:height="{block.height}px"
@@ -175,7 +192,7 @@
               class="cell"
               class:selected={isSelected}
               oncontextmenu={(e) => onmenu?.(cell.index, e)}
-              style:top="{block.top}px"
+              style:top="{block.top + pad}px"
               style:left="{cell.left}px"
               style:width="{cell.width}px"
               style:height="{block.height}px"
@@ -185,7 +202,7 @@
                   <span class="cell-broken"><Icon name="brokenImage" size={32} /></span>
                 {:else}
                   <img
-                    src={mediaUrl(item.id, 'thumb', item.m)}
+                    src={thumbUrl(item)}
                     alt=""
                     draggable="false"
                     decoding="async"
@@ -218,6 +235,6 @@
     </div>
   </div>
   {#if layout.height > viewport * 2}
-    <Scrubber months={layout.months} height={layout.height} {viewport} {scrollTop} onseek={seek} />
+    <Scrubber months={layout.months} height={layout.height} {viewport} scrollTop={Math.max(0, scrollTop - pad)} onseek={seek} />
   {/if}
 </div>

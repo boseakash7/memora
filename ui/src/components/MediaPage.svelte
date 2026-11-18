@@ -4,6 +4,7 @@
     deleteForever,
     itemMenu,
     moveToTrash,
+    moveToVault,
     removeFromAlbum,
     restoreFromTrash,
     toggleArchive,
@@ -29,6 +30,8 @@
     subtitle,
     actions,
     empty,
+    top,
+    topHeight = 0,
   }: {
     query: TimelineQuery
     /** Shows a title bar above the grid. */
@@ -38,6 +41,9 @@
     actions?: Snippet<[number]>
     /** Shown instead of the grid when there is nothing to show. */
     empty: Snippet
+    /** Shown above the first day, scrolling with the grid (Memories on Photos). */
+    top?: Snippet
+    topHeight?: number
   } = $props()
 
   const scope = $derived(query.scope ?? 'all')
@@ -248,6 +254,8 @@
         ontoggle={toggle}
         ontoggleday={toggleDay}
         {onmenu}
+        {top}
+        {topHeight}
       />
     {/if}
   </div>
@@ -277,6 +285,7 @@
         {:else}
           <button class="icon-btn" title="Archive (Shift+A)" onclick={onSelection(toggleArchive)}><Icon name="archive" /></button>
         {/if}
+        <button class="icon-btn" title="Move to locked folder" onclick={onSelection(moveToVault)}><Icon name="lock" /></button>
         <button class="icon-btn" title="Move to trash (Delete)" onclick={onSelection(moveToTrash)}><Icon name="trash" /></button>
       {/if}
     </div>

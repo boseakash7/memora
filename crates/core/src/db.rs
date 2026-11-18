@@ -286,6 +286,38 @@ const MIGRATIONS: &[&str] = &[
         value  TEXT NOT NULL       -- {"name", "hidden"}
     ) WITHOUT ROWID;
     "#,
+    // 13: the locked folder. Items moved there leave the library; their folder's `.memora`
+    // log is rewritten without them (`log_dirty`), and the search index drops their words
+    // for good instead of leaving them in old index pages (`secure-delete`, SQLite 3.44+).
+    r#"
+    ALTER TABLE folders ADD COLUMN log_dirty INTEGER NOT NULL DEFAULT 0;
+    INSERT INTO media_fts (media_fts, rank) VALUES ('secure-delete', 1);
+    "#,
+    // 14: memories (see `memories`). `key` is stable across rebuilds so seen, hidden and
+    // removed photos stay; `items` is a JSON list of media ids in order.
+    r#"
+    CREATE TABLE memories (
+        id          INTEGER PRIMARY KEY,
+        key         TEXT NOT NULL UNIQUE,
+        kind        TEXT NOT NULL,             -- day | trip | person | year | month
+        title       TEXT NOT NULL,
+        start_day   TEXT NOT NULL,             -- YYYY-MM-DD
+        end_day     TEXT NOT NULL,
+        cover_id    INTEGER REFERENCES media(id) ON DELETE SET NULL,
+        items       TEXT NOT NULL,
+        score       REAL NOT NULL DEFAULT 0,
+        created_at  TEXT NOT NULL,
+        updated_at  TEXT NOT NULL,
+        seen_at     TEXT,
+        hidden      INTEGER NOT NULL DEFAULT 0,
+        active      INTEGER NOT NULL DEFAULT 1 -- 0: hidden and no longer qualifies (kept so it stays hidden)
+    );
+    CREATE TABLE memory_removed (
+        key       TEXT NOT NULL,
+        media_id  INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+        PRIMARY KEY (key, media_id)
+    ) WITHOUT ROWID;
+    "#,
 ];
 
 pub type Conn = PooledConnection<SqliteConnectionManager>;

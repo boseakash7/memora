@@ -14,6 +14,7 @@
     if (!cur) return
     dialogs.current = null
     if (cur.kind === 'confirm') cur.resolve(ok)
+    else if (cur.password) cur.resolve(ok && cur.value ? cur.value : null)
     else cur.resolve(ok && cur.value.trim() ? cur.value.trim() : null)
   }
 
@@ -37,10 +38,12 @@
       {#if d.kind === 'confirm'}
         <p>{d.message}</p>
       {:else}
+        {#if d.message}<p>{d.message}</p>{/if}
         <label class="field">
           <span>{d.label}</span>
-          <input type="text" bind:this={input} bind:value={d.value} maxlength="200" />
+          <input type={d.password ? 'password' : 'text'} bind:this={input} bind:value={d.value} maxlength="200" />
         </label>
+        {#if d.error}<p class="error">{d.error}</p>{/if}
       {/if}
       <div class="modal-actions">
         <button class="btn" onclick={() => answer(false)}>Cancel</button>

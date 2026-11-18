@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { slidePhoto } from '../lib/motion.svelte'
   import * as act from '../lib/actions'
   import {
     api,
@@ -167,13 +168,25 @@
   const hasPrev = $derived(index > 0)
   const hasNext = $derived(index < items.length - 1)
 
+  /** Which way the last Next / Previous went, for the slide. */
+  let dir = $state(1)
+
+  /** The first moment after opening, while the photo zooms in (see motion.css). */
+  let opening = $state(true)
+  $effect(() => {
+    const t = setTimeout(() => (opening = false), 500)
+    return () => clearTimeout(t)
+  })
+
   function go(delta: number) {
     const n = index + delta
+    dir = Math.sign(delta) || 1
     if (n >= 0 && n < items.length) onnavigate(n)
   }
 
   /** After removing the current item from the list: show the next one, or close. */
   function advance() {
+    dir = index < items.length - 1 ? 1 : -1
     if (index < items.length - 1) onnavigate(index + 1)
     else if (index > 0) onnavigate(index - 1)
     else onclose()
@@ -245,7 +258,8 @@
   }
 
   function ondblclick(e: MouseEvent) {
-    if (item.v) return
+    // Two quick clicks on Next / Previous are not a zoom.
+    if (item.v || (e.target as Element).closest('button')) return
     const [cx, cy] = centre(e)
     if (scale > 1) resetZoom()
     else zoomTo(2.5, cx, cy)
@@ -304,7 +318,7 @@
 
 <svelte:window {onkeydown} />
 
-<div class="viewer" class:idle={idle && item.v} role="dialog" aria-modal="true" aria-label="Photo viewer">
+<div class="viewer" class:opening class:idle={idle && item.v} role="dialog" aria-modal="true" aria-label="Photo viewer">
   <div class="viewer-main">
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="viewer-bar" data-tauri-drag-region="deep" oncontextmenu={titleBarContextMenu}>
@@ -363,32 +377,34 @@
       onpointerup={() => (drag = null)}
     >
       {#key item.id}
-        {#if item.v}
-          <VideoPlayer
-            {item}
-            {box}
-            keys={!picking && !dialogs.current}
-            bind:idle
-            onopenexternal={run(act.openWithDefault)}
-          />
-        {:else}
-          <div
-            class="viewer-photo"
-            style:width="{box.w}px"
-            style:height="{box.h}px"
-            style:transform="translate({tx}px, {ty}px) scale({scale})"
-          >
-            <img class="viewer-thumb" src={mediaUrl(item.id, 'thumb', item.m)} alt="" draggable="false" />
-            <img
-              class="viewer-full"
-              class:loaded
-              src={mediaUrl(item.id, 'display')}
-              alt={details?.name ?? ''}
-              draggable="false"
-              onload={() => (loaded = true)}
+        <div class="viewer-slide" in:slidePhoto={{ dir }} out:slidePhoto={{ dir, out: true }}>
+          {#if item.v}
+            <VideoPlayer
+              {item}
+              {box}
+              keys={!picking && !dialogs.current}
+              bind:idle
+              onopenexternal={run(act.openWithDefault)}
             />
-          </div>
-        {/if}
+          {:else}
+            <div
+              class="viewer-photo"
+              style:width="{box.w}px"
+              style:height="{box.h}px"
+              style:transform="translate({tx}px, {ty}px) scale({scale})"
+            >
+              <img class="viewer-thumb" src={mediaUrl(item.id, 'thumb', item.m)} alt="" draggable="false" />
+              <img
+                class="viewer-full"
+                class:loaded
+                src={mediaUrl(item.id, 'display')}
+                alt={details?.name ?? ''}
+                draggable="false"
+                onload={() => (loaded = true)}
+              />
+            </div>
+          {/if}
+        </div>
       {/key}
 
       {#if hasPrev}

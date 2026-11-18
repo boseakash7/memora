@@ -68,7 +68,13 @@
     try {
       await api.items.trash(ids)
       toast(`Moved ${ids.length} ${ids.length === 1 ? 'item' : 'items'} to trash`, {
-        action: { label: 'Undo', run: () => api.items.restore(ids).catch((e) => toast(errorMessage(e), { error: true })) },
+        action: {
+          label: 'Undo',
+          run: () =>
+            api.items.restore(ids).catch((e) => {
+              toast(errorMessage(e), { error: true })
+            }),
+        },
       })
     } catch (e) {
       toast(errorMessage(e), { error: true })

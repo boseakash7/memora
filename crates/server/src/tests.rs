@@ -590,3 +590,78 @@ async fn people_names_merges_and_search() {
     let (status, ai) = h.call("GET", "/api/ai", true, None).await;
     assert_eq!((status, ai), (StatusCode::OK, Value::Null));
 }
+
+#[tokio::test]
+async fn locked_folder() {
+    let h = harness();
+    let photos = h.dir_path.join("Photos");
+    std::fs::create_dir_all(&photos).unwrap();
+    image::RgbImage::from_pixel(640, 480, image::Rgb([0, 128, 255])).save(photos.join("private.jpg")).unwrap();
+    image::RgbImage::new(40, 30).save(photos.join("beach.jpg")).unwrap();
+    h.call("POST", "/api/folders", true, Some(json!({"path": photos}))).await;
+    let lib = h.library.clone();
+    assert!(tokio::task::spawn_blocking(move || lib.wait_idle(std::time::Duration::from_secs(30))).await.unwrap());
+    let (_, all) = h.call("GET", "/api/timeline", true, None).await;
+    assert_eq!(all.as_array().unwrap().len(), 2);
+    let (_, d) = h.call("GET", &format!("/api/media/{}", all[0]["id"]), true, None).await;
+    let private = if d["name"] == "private.jpg" { all[0]["id"].as_i64().unwrap() } else { all[1]["id"].as_i64().unwrap() };
+
+    // Not set up: needs setup first; the API needs the token like everything else.
+    let (_, st) = h.call("GET", "/api/vault", true, None).await;
+    assert_eq!((st["exists"].as_bool(), st["unlocked"].as_bool()), (Some(false), Some(false)));
+    assert_eq!(h.call("GET", "/api/vault/items", false, None).await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(h.call("GET", "/api/vault/items", true, None).await.0, StatusCode::LOCKED);
+    assert_eq!(h.call("POST", "/api/vault/setup", true, Some(json!({"password": "123"}))).await.0, StatusCode::BAD_REQUEST);
+    let (status, key) = h.call("POST", "/api/vault/setup", true, Some(json!({"password": "vault password"}))).await;
+    assert_eq!(status, StatusCode::OK);
+    let recovery = key["recoveryKey"].as_str().unwrap().to_owned();
+    assert_eq!(recovery.len(), 39);
+
+    let (status, moved) = h.call("POST", "/api/vault/move-in", true, Some(json!({"ids": [private]}))).await;
+    assert_eq!((status, moved["moved"].as_u64()), (StatusCode::OK, Some(1)), "{moved}");
+    assert!(!photos.join("private.jpg").exists());
+    let (_, all) = h.call("GET", "/api/timeline", true, None).await;
+    assert_eq!(all.as_array().unwrap().len(), 1, "gone from the library");
+    assert_eq!(h.call("GET", &format!("/api/media/{private}/thumb"), true, None).await.0, StatusCode::NOT_FOUND);
+
+    let (status, headers, body) = h.raw("GET", "/api/vault/items", true, None, &[]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CACHE_CONTROL], "no-store", "never cached by the webview");
+    let items: Value = serde_json::from_slice(&body).unwrap();
+    let item = &items[0];
+    assert_eq!((item["name"].as_str(), item["width"].as_u64()), (Some("private.jpg"), Some(640)), "{item}");
+    let id = item["id"].as_str().unwrap().to_owned();
+    let size = item["size"].as_u64().unwrap();
+
+    let (status, headers, thumb) = h.raw("GET", &format!("/api/vault/items/{id}/thumb"), true, None, &[]).await;
+    assert_eq!((status, headers[header::CONTENT_TYPE].to_str().unwrap()), (StatusCode::OK, "image/jpeg"));
+    assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+    assert_eq!(&thumb[..2], &[0xFF, 0xD8]);
+    let (status, headers, part) =
+        h.raw("GET", &format!("/api/vault/items/{id}/original"), true, None, &[("range", "bytes=2-11")]).await;
+    assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(headers[header::CONTENT_RANGE], format!("bytes 2-11/{size}"));
+    assert_eq!(part.len(), 10);
+    let (_, _, whole) = h.raw("GET", &format!("/api/vault/items/{id}/original"), true, None, &[]).await;
+    assert_eq!(whole.len() as u64, size);
+    assert_eq!(&whole[2..12], &part[..]);
+    let (status, _, _) =
+        h.raw("GET", &format!("/api/vault/items/{id}/original"), true, None, &[("range", &format!("bytes={size}-"))]).await;
+    assert_eq!(status, StatusCode::RANGE_NOT_SATISFIABLE);
+
+    // Locked: every item answer is 423 until unlocked again.
+    h.call("POST", "/api/vault/lock", true, None).await;
+    assert_eq!(h.call("GET", &format!("/api/vault/items/{id}/thumb"), true, None).await.0, StatusCode::LOCKED);
+    assert_eq!(h.call("POST", "/api/vault/unlock", true, Some(json!({"password": "nope nope"}))).await.0, StatusCode::FORBIDDEN);
+    let (status, st) = h.call("POST", "/api/vault/recover", true, Some(json!({"recoveryKey": recovery, "password": "brand new pw"}))).await;
+    assert_eq!((status, st["count"].as_u64()), (StatusCode::OK, Some(1)), "{st}");
+
+    // Out again: back in the folder and in the library.
+    let (_, out) = h.call("POST", "/api/vault/move-out", true, Some(json!({"ids": [id], "path": photos}))).await;
+    assert_eq!(out["moved"], 1, "{out}");
+    assert_eq!(std::fs::read(photos.join("private.jpg")).unwrap(), whole);
+    let lib = h.library.clone();
+    assert!(tokio::task::spawn_blocking(move || lib.wait_idle(std::time::Duration::from_secs(30))).await.unwrap());
+    let (_, all) = h.call("GET", "/api/timeline", true, None).await;
+    assert_eq!(all.as_array().unwrap().len(), 2);
+}
