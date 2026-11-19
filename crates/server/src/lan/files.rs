@@ -58,10 +58,14 @@ pub async fn send(s: &LanState, id: i64, file: File, start_secs: f64, req: Reque
                 return Err(photos_core::Error::NotFound.into());
             }
             let _slot = s.app.thumb_slots.acquire().await.map_err(|e| ApiError::Internal(e.to_string()))?;
-            let path = blocking(move || match file {
-                File::Thumb => thumbs::ensure_thumb(lib.paths(), &m),
-                File::Small => thumbs::ensure_small(lib.paths(), &m),
-                _ => thumbs::ensure_tv(lib.paths(), &m),
+            let app = s.app.clone();
+            let path = blocking(move || {
+                crate::edit::prepare_mask(&app, &m);
+                match file {
+                    File::Thumb => thumbs::ensure_thumb(lib.paths(), &m),
+                    File::Small => thumbs::ensure_small(lib.paths(), &m),
+                    _ => thumbs::ensure_tv(lib.paths(), &m),
+                }
             })
             .await?;
             serve(path, Some("image/jpeg"), "max-age=86400", req).await

@@ -54,6 +54,8 @@
   let openId = $state<number | null>(null)
   /** Open the viewer with its info panel (right-click → Info). */
   let openInfo = $state(false)
+  /** Open the viewer straight into the editor (right-click → Edit). */
+  let openEdit = $state(false)
   let grid = $state<ReturnType<typeof PhotoGrid>>()
   let selected = $state.raw<ReadonlySet<number>>(new Set())
   let lastToggled: number | null = null
@@ -124,6 +126,7 @@
     const index = openIndex
     openId = null
     openInfo = false
+    openEdit = false
     if (index >= 0) grid?.reveal(index)
   }
 
@@ -201,6 +204,13 @@
           openInfo = true
           openId = item.id
         },
+        edit:
+          scope === 'trash'
+            ? undefined
+            : () => {
+                openEdit = true
+                openId = item.id
+              },
         select: selected.has(item.id) ? undefined : () => toggle(index, false),
       }),
     )
@@ -298,6 +308,7 @@
       {scope}
       {albumId}
       info={openInfo}
+      edit={openEdit}
       onnavigate={(i) => (openId = items![i].id)}
       onclose={close}
     />

@@ -40,7 +40,7 @@ fn index_by_hand(db: &Db) {
     conn.execute("INSERT INTO places (country, admin1, city) VALUES ('IN', 'Karnataka', 'Bangalore')", []).unwrap();
     conn.execute(
         "UPDATE media SET width = 40, height = 30, taken_at = '2024-05-01T10:00:00', camera_make = 'Canon',
-             lat = 12.9, lon = 77.6, blake3 = 'hash-' || name, phash = 42, place_id = 1, stage = 4",
+             lat = 12.9, lon = 77.6, blake3 = 'hash-' || name, phash = 42, place_id = 1, stage = 4, ai_done = 3",
         [],
     )
     .unwrap();

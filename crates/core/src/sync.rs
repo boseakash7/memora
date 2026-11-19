@@ -17,6 +17,7 @@
 //! |---|---|---|
 //! | `fav` | item | true / false |
 //! | `arch`, `trash` | item | time it was archived / trashed, or null |
+//! | `edit` | item | the photo's edit recipe (see `edit::Edit`), or null for the original |
 //! | `album` | `s` = album uid | `{"name","created"}`, null once deleted |
 //! | `album_item` | item + album uid | true / false |
 //! | `album_cover` | album uid | `{"p","h"}` of the cover |
@@ -593,13 +594,22 @@ fn seed(conn: &Connection, folder_id: i64) -> Result<()> {
     let mut recs = Vec::new();
     let mut push = |r: Rec| recs.push(Rec { clock: Some(seed.clone()), ..r });
 
-    let mut stmt = conn.prepare("SELECT id, favorite, archived_at, trashed_at FROM media WHERE folder_id = ?1")?;
+    let mut stmt = conn.prepare("SELECT id, favorite, archived_at, trashed_at, edit FROM media WHERE folder_id = ?1")?;
     let rows = stmt.query_map([folder_id], |r| {
-        Ok((r.get::<_, i64>(0)?, r.get::<_, bool>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, Option<String>>(3)?))
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, bool>(1)?,
+            r.get::<_, Option<String>>(2)?,
+            r.get::<_, Option<String>>(3)?,
+            r.get::<_, Option<String>>(4)?,
+        ))
     })?;
     for row in rows {
-        let (id, fav, arch, trash) = row?;
+        let (id, fav, arch, trash, edit) = row?;
         let Some(item) = refs.get(&id) else { continue };
+        if let Some(e) = edit.as_deref().and_then(crate::edit::parse) {
+            push(item.rec("edit", "", serde_json::to_value(e)?));
+        }
         if fav {
             push(item.rec("fav", "", json!(true)));
         }
@@ -1004,6 +1014,13 @@ fn apply_all(conn: &Connection) -> Result<usize> {
         changed += conn.prepare_cached(&sql)?.execute(params![id, value])?;
     }
 
+    // Edits.
+    for ((field, _, id), r) in &per_item {
+        if *field == "edit" {
+            changed += apply_edit(conn, *id, &r.value)?;
+        }
+    }
+
     // Albums: create, rename, delete.
     let mut album_ids: HashMap<&str, i64> = HashMap::new();
     for ((field, uid), r) in &entity {
@@ -1079,6 +1096,24 @@ fn apply_all(conn: &Connection) -> Result<usize> {
         conn.execute("DELETE FROM persons WHERE NOT EXISTS (SELECT 1 FROM faces WHERE person_id = persons.id)", [])?;
     }
     Ok(changed)
+}
+
+/// Make an item's edit match a recorded one (a recipe, or null for the original).
+fn apply_edit(conn: &Connection, id: i64, value: &Value) -> Result<usize> {
+    let wanted = serde_json::from_value::<crate::edit::Edit>(value.clone())
+        .ok()
+        .map(crate::edit::Edit::normalized)
+        .filter(|e| !e.is_identity());
+    let current: Option<Option<String>> =
+        conn.prepare_cached("SELECT edit FROM media WHERE id = ?1 AND kind = 'photo'")?.query_row([id], |r| r.get(0)).optional()?;
+    let Some(current) = current else { return Ok(0) };
+    if current.as_deref().and_then(crate::edit::parse) == wanted {
+        return Ok(0);
+    }
+    let (json, at, w, h) = crate::edit::columns(conn, id, wanted.as_ref())?;
+    Ok(conn
+        .prepare_cached("UPDATE media SET edit = ?2, edited_at = ?3, edit_width = ?4, edit_height = ?5 WHERE id = ?1")?
+        .execute(params![id, json, at, w, h])?)
 }
 
 /// Apply the recorded faces of one item that recognition just looked at, so names and

@@ -21,6 +21,7 @@
   import { toast } from '../lib/toast.svelte'
   import { appWindow, setFullscreen, titleBarContextMenu } from '../lib/window.svelte'
   import AlbumPicker from './AlbumPicker.svelte'
+  import Editor from './Editor.svelte'
   import VideoPlayer from './VideoPlayer.svelte'
 
   let {
@@ -29,6 +30,7 @@
     scope = 'all',
     albumId = null,
     info: openWithInfo = false,
+    edit: openWithEditor = false,
     onnavigate,
     onclose,
   }: {
@@ -39,6 +41,8 @@
     albumId?: number | null
     /** Start with the info panel open. */
     info?: boolean
+    /** Start in the editor (photos). */
+    edit?: boolean
     onnavigate: (index: number) => void
     onclose: () => void
   } = $props()
@@ -56,6 +60,11 @@
   /** Faces of people (not hidden) in this item. */
   let faces = $state<Face[]>([])
   let picking = $state(false)
+  /** The photo editor is open over the viewer. */
+  let editing = $state(false)
+  /** Picture version after a save here, until the list reloads with the new one. */
+  let savedVersion = $state<{ id: number; m: number } | null>(null)
+  const version = $derived(savedVersion?.id === item.id ? Math.max(savedVersion.m, item.m) : item.m)
 
   let stageW = $state(0)
   let stageH = $state(0)
@@ -145,7 +154,7 @@
   $effect(() => {
     for (const n of [index + 1, index - 1]) {
       const it = items[n]
-      if (it && !it.v) new Image().src = mediaUrl(it.id, 'display')
+      if (it && !it.v) new Image().src = mediaUrl(it.id, 'display', it.m)
     }
   })
 
@@ -207,6 +216,7 @@
       },
       onremoved: advance,
       info: () => (showInfo = !showInfo),
+      edit: canEdit ? openEditor : undefined,
     }
   }
   const run = (action: (c: act.ActionContext) => void) => () => action(context())
@@ -216,11 +226,45 @@
     openContextMenu(e, entries)
   }
 
+  const canEdit = $derived(!item.v && scope !== 'trash')
+
+  function openEditor() {
+    if (!canEdit || !details || details.id !== item.id) return
+    editing = true
+  }
+
+  // Opened with "Edit": go to the editor once the photo's details are in.
+  // svelte-ignore state_referenced_locally
+  let editPending = openWithEditor
+  $effect(() => {
+    if (editPending && details && details.id === item.id) {
+      editPending = false
+      openEditor()
+    }
+  })
+
+  async function editorClosed(saved: boolean) {
+    editing = false
+    if (!saved) return
+    const id = item.id
+    try {
+      const m = await api.media(id)
+      if (item.id !== id) return
+      details = m
+      // Seconds, like the timeline's `m`, and newer than any cached copy.
+      savedVersion = { id, m: Math.floor((m.editedAt ?? Date.now()) / 1000) }
+      loaded = false
+    } catch {
+      // the list reload brings the new picture anyway
+    }
+  }
+
   function onkeydown(e: KeyboardEvent) {
-    if (picking || dialogs.current) return
+    if (picking || dialogs.current || editing) return
     if (e.key === 'ArrowLeft') go(-1)
     else if (e.key === 'ArrowRight') go(1)
     else if (e.key === 'i') showInfo = !showInfo
+    else if (e.key === 'e' && !e.ctrlKey && canEdit) openEditor()
     else if (e.key === 'Delete' && scope !== 'trash') act.moveToTrash(context())
     else if (e.key === 'A' && e.shiftKey && !e.ctrlKey && scope !== 'trash') act.toggleArchive(context())
     else if (e.key === 'Escape') {
@@ -330,6 +374,9 @@
           <Icon name="deleteForever" size={20} /> Delete
         </button>
       {:else}
+        {#if canEdit}
+          <button class="icon-btn" title="Edit (E)" disabled={!details} onclick={openEditor}><Icon name="tune" /></button>
+        {/if}
         <button
           class="icon-btn"
           title={favorite ? 'Remove from favorites' : 'Add to favorites'}
@@ -393,11 +440,11 @@
               style:height="{box.h}px"
               style:transform="translate({tx}px, {ty}px) scale({scale})"
             >
-              <img class="viewer-thumb" src={mediaUrl(item.id, 'thumb', item.m)} alt="" draggable="false" />
+              <img class="viewer-thumb" src={mediaUrl(item.id, 'thumb', version)} alt="" draggable="false" />
               <img
                 class="viewer-full"
                 class:loaded
-                src={mediaUrl(item.id, 'display')}
+                src={mediaUrl(item.id, 'display', version)}
                 alt={details?.name ?? ''}
                 draggable="false"
                 onload={() => (loaded = true)}
@@ -524,6 +571,15 @@
             {/if}
           </div>
         </div>
+        {#if details.edit}
+          <div class="info-row">
+            <Icon name="tune" />
+            <div>
+              <div>Edited</div>
+              <div class="muted">The original file is unchanged</div>
+            </div>
+          </div>
+        {/if}
         {#if details.archived}
           <div class="info-row">
             <Icon name="archive" />
@@ -541,6 +597,10 @@
         {/if}
       {/if}
     </aside>
+  {/if}
+
+  {#if editing && details}
+    <Editor media={details} onclose={editorClosed} />
   {/if}
 
   {#if picking}

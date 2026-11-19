@@ -4,6 +4,7 @@
   import ContextMenu from './components/ContextMenu.svelte'
   import Dialogs from './components/Dialogs.svelte'
   import Toasts from './components/Toasts.svelte'
+  import Welcome from './components/Welcome.svelte'
   import WindowControls from './components/WindowControls.svelte'
   import Icon from './lib/Icon.svelte'
   import type { IconName } from './lib/icons'
@@ -133,13 +134,19 @@
     document.documentElement.classList.toggle('window-inactive', !appWindow.focused)
   })
 
-  // Apply the saved theme and animation level on startup.
+  let welcome = $state(false)
+
+  // Apply the saved theme and animation level on startup, and greet a new user. A library
+  // that already has folders (set up before the welcome existed) skips it.
   $effect(() => {
     api.settings
       .get()
-      .then((s) => {
+      .then(async (s) => {
         applyTheme(s.theme)
         applyAnimations(s.animations)
+        if (s.welcomeDone) return
+        if ((await api.folders.list()).length > 0) await api.settings.update({ welcomeDone: true })
+        else welcome = true
       })
       .catch(() => {})
   })
@@ -240,6 +247,7 @@
   </main>
 </div>
 
+{#if welcome}<Welcome ondone={() => (welcome = false)} />{/if}
 <Dialogs />
 <Toasts />
 <ContextMenu />

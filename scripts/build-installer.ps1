@@ -1,9 +1,11 @@
 # Builds the Windows installer with everything Memora needs inside it: FFmpeg, the face and
 # content recognition models and DirectML.dll, so nothing else has to be installed.
 #
-#   powershell -ExecutionPolicy Bypass -File scripts\build-installer.ps1 [-Models <folder>]
+#   powershell -ExecutionPolicy Bypass -File scripts\build-installer.ps1 [-Models <folder>] [-NoModels]
 #
-# Output: <cargo target>\release\bundle\nsis\Memora_<version>_x64-setup.exe
+# Output: <cargo target>\release\bundle\nsis\Memora_<version>_x64-setup.exe, the full offline
+# installer. With -NoModels: Memora_<version>_x64-online-setup.exe, about 600 MB smaller; the
+# app then offers to download the AI features the user picks on first start (and in Settings).
 #
 # Signing: when a certificate is set up (see scripts\sign.ps1), memora.exe, the installer and
 # the uninstaller are signed. Set MEMORA_REQUIRE_SIGNING=1 for release builds, so a missing
@@ -13,7 +15,7 @@
 # folder, so later builds work offline. Plain `cargo tauri build` also works, but its installer
 # lacks these files (the app then uses FFmpeg from PATH and models from %LOCALAPPDATA%).
 
-param([string]$Models = (Join-Path $env:LOCALAPPDATA 'Memora\models'))
+param([string]$Models = (Join-Path $env:LOCALAPPDATA 'Memora\models'), [switch]$NoModels)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 
@@ -30,8 +32,11 @@ $modelFiles = @(
     'face_recognition_sface_2021dec.onnx',
     'clip-vit-base-patch32\vision_model_quantized.onnx',
     'clip-vit-base-patch32\text_model_quantized.onnx',
-    'clip-vit-base-patch32\tokenizer.json'
+    'clip-vit-base-patch32\tokenizer.json',
+    'birefnet-lite\model.onnx',
+    'birefnet-lite-512\model.onnx'
 )
+if ($NoModels) { $modelFiles = @() }
 
 function Get-SigningConfigured {
     return [bool]($env:MEMORA_SIGN_THUMBPRINT -or $env:MEMORA_SIGN_PFX -or $env:MEMORA_TRUSTED_SIGNING_METADATA)
@@ -186,7 +191,14 @@ try {
 }
 
 $installer = Get-ChildItem (Join-Path $target 'release\bundle\nsis') -Filter '*-setup.exe' |
+    Where-Object { $_.Name -notlike '*-online-setup.exe' } |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
+if ($NoModels) {
+    # Kept beside the full installer under its own name.
+    $online = Join-Path $installer.DirectoryName ($installer.Name -replace '-setup\.exe$', '-online-setup.exe')
+    Move-Item $installer.FullName $online -Force
+    $installer = Get-Item $online
+}
 $signature = Get-AuthenticodeSignature $installer.FullName
 Write-Host ''
 Write-Host ("Installer: {0} ({1:N0} MB)" -f $installer.FullName, ($installer.Length / 1MB))

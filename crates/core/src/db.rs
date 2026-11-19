@@ -318,6 +318,21 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (key, media_id)
     ) WITHOUT ROWID;
     "#,
+    // 15: photo edits, saved non-destructively (see `edit`). `edit` is the JSON recipe (NULL:
+    // the original); `edited_at` (unix ms) changes picture URLs and cache freshness, also when
+    // an edit is reverted; `edit_width`/`edit_height` are the size after cropping and turning.
+    r#"
+    ALTER TABLE media ADD COLUMN edit TEXT;
+    ALTER TABLE media ADD COLUMN edited_at INTEGER;
+    ALTER TABLE media ADD COLUMN edit_width INTEGER;
+    ALTER TABLE media ADD COLUMN edit_height INTEGER;
+    "#,
+    // 16: which recognition models looked at an item (bits of `ai::FACES`, `ai::CLIP`). Each
+    // model is downloaded on its own now; until then recognition needed both.
+    r#"
+    ALTER TABLE media ADD COLUMN ai_done INTEGER NOT NULL DEFAULT 0;
+    UPDATE media SET ai_done = 3 WHERE stage >= 4;
+    "#,
 ];
 
 pub type Conn = PooledConnection<SqliteConnectionManager>;

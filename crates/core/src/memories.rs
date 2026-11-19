@@ -653,7 +653,8 @@ pub struct Memory {
 /// Visible items of a memory, in its order.
 fn visible_items(conn: &r2d2_sqlite::rusqlite::Connection, json: &str) -> Result<Vec<TimelineItem>> {
     let mut stmt = conn.prepare_cached(&format!(
-        "SELECT m.id, m.width, m.height, m.taken_at, m.kind, m.duration_ms, m.mtime, m.favorite
+        "SELECT m.id, coalesce(m.edit_width, m.width), coalesce(m.edit_height, m.height), m.taken_at, m.kind, m.duration_ms,
+             max(m.mtime, coalesce(m.edited_at, 0)), m.favorite
          FROM json_each(?1) j JOIN media m ON m.id = j.value
          WHERE {VISIBLE_M} AND m.stage >= ?2 ORDER BY j.key"
     ))?;

@@ -315,13 +315,14 @@ struct Details {
 
 async fn details(State(s): State<LanState>, Path(id): Path<i64>) -> Result<Json<Details>, ApiError> {
     let m = files::visible(&s, id).await?;
+    let (w, h) = m.shown_size().unzip();
     Ok(Json(Details {
         id: m.id,
         name: m.name,
         video: m.kind == Kind::Video,
         taken_at: m.taken_at,
-        w: m.width,
-        h: m.height,
+        w,
+        h,
         duration_ms: m.duration_ms,
         video_codec: m.video_codec,
         audio_codec: m.audio_codec,

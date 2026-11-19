@@ -6,11 +6,13 @@
 mod api;
 mod auth;
 mod dlna;
+mod edit;
 mod error;
 mod explore;
 pub mod lan;
 mod media;
 mod memories;
+mod models;
 mod organize;
 mod people;
 mod stream;
@@ -39,6 +41,8 @@ pub struct AppState {
     pub lan: Arc<lan::Lan>,
     /// Face and content recognition; None when not started (tests).
     pub ai: Option<photos_ml::Ai>,
+    /// Photos open in the editor, decoded once for quick previews.
+    editor: Arc<photos_core::edit::session::Sources>,
 }
 
 impl AppState {
@@ -51,6 +55,7 @@ impl AppState {
             streams: Default::default(),
             lan: Default::default(),
             ai: None,
+            editor: Default::default(),
         }
     }
 

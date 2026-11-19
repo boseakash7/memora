@@ -665,3 +665,103 @@ async fn locked_folder() {
     let (_, all) = h.call("GET", "/api/timeline", true, None).await;
     assert_eq!(all.as_array().unwrap().len(), 2);
 }
+
+#[tokio::test]
+async fn photo_editing() {
+    let h = harness();
+    let photos = h.dir_path.join("Photos");
+    std::fs::create_dir_all(&photos).unwrap();
+    image::RgbImage::from_fn(120, 80, |x, _| image::Rgb([(x * 2) as u8, 90, 160])).save(photos.join("street.jpg")).unwrap();
+    h.call("POST", "/api/folders", true, Some(json!({"path": photos}))).await;
+    let lib = h.library.clone();
+    assert!(tokio::task::spawn_blocking(move || lib.wait_idle(std::time::Duration::from_secs(30))).await.unwrap());
+    let (_, all) = h.call("GET", "/api/timeline", true, None).await;
+    let id = all[0]["id"].as_i64().unwrap();
+    assert_eq!((all[0]["w"].as_u64(), all[0]["h"].as_u64()), (Some(120), Some(80)));
+
+    let (status, f) = h.call("GET", "/api/edit/filters", true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(f["filters"].as_array().unwrap().len() >= 20);
+    assert_eq!(f["subjects"], false, "no recognition in tests");
+
+    // A preview is a JPEG of the edited photo at the size asked for.
+    let edit = json!({"rotate": 1, "adjust": {"exposure": 30}, "filter": "chrome"});
+    let (status, headers, body) =
+        h.raw("POST", &format!("/api/media/{id}/edit/preview"), true, Some(json!({"edit": edit, "max": 60})), &[]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+    let img = image::load_from_memory(&body).unwrap();
+    assert_eq!((img.width(), img.height()), (40, 60));
+
+    let (status, e) = h.call("POST", &format!("/api/media/{id}/edit/enhance"), true, Some(json!({"edit": {}}))).await;
+    assert_eq!(status, StatusCode::OK, "{e}");
+    assert!(e["adjust"]["vibrance"].as_f64().is_some() && !e["suggested"].as_array().unwrap().is_empty(), "{e}");
+
+    // Saving turns the grid item and the viewer's picture.
+    let (status, saved) = h.call("PUT", &format!("/api/media/{id}/edit"), true, Some(json!({"edit": edit}))).await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!((saved["w"].as_u64(), saved["h"].as_u64()), (Some(80), Some(120)));
+    let (_, all) = h.call("GET", "/api/timeline", true, None).await;
+    assert_eq!((all[0]["w"].as_u64(), all[0]["m"].as_i64()), (Some(80), saved["m"].as_i64()));
+    let (_, _, body) = h.raw("GET", &format!("/api/media/{id}/display"), true, None, &[]).await;
+    let shown = image::load_from_memory(&body).unwrap();
+    assert_eq!((shown.width(), shown.height()), (80, 120));
+    let (_, _, body) = h.raw("GET", &format!("/api/media/{id}/thumb"), true, None, &[]).await;
+    assert_eq!(image::load_from_memory(&body).unwrap().width(), 80);
+    let (_, got) = h.call("GET", &format!("/api/media/{id}/edit"), true, None).await;
+    assert_eq!(got["edit"]["filter"], "chrome");
+
+    // Background blur without the subject model is refused with a reason.
+    let (status, err) = h.call("POST", &format!("/api/media/{id}/edit/subject"), true, None).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(err["error"].as_str().unwrap().contains("model"));
+
+    // Export writes a new file; never the original.
+    let original = photos.join("street.jpg");
+    let before = std::fs::read(&original).unwrap();
+    let (status, _) = h.call("POST", &format!("/api/media/{id}/edit/export"), true, Some(json!({"path": original}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let copy = h.dir_path.join("street-edited.jpg");
+    let (status, out) = h.call("POST", &format!("/api/media/{id}/edit/export"), true, Some(json!({"path": copy}))).await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+    assert_eq!((out["width"].as_u64(), out["height"].as_u64()), (Some(80), Some(120)));
+    assert!(copy.is_file());
+    assert_eq!(std::fs::read(&original).unwrap(), before, "the original is untouched");
+
+    // Reverting brings the original back everywhere.
+    let (_, saved) = h.call("PUT", &format!("/api/media/{id}/edit"), true, Some(json!({"edit": null}))).await;
+    assert_eq!((saved["w"].as_u64(), saved["edit"].is_null()), (Some(120), true));
+    let (_, _, body) = h.raw("GET", &format!("/api/media/{id}/display"), true, None, &[]).await;
+    assert_eq!(body, before);
+}
+
+#[tokio::test]
+async fn ai_features_install_state_and_removal() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = photos_core::AppPaths::in_dir(&dir.path().join("data")).unwrap();
+    let db = photos_core::Db::open(&paths.db_path).unwrap();
+    let library = Library::start(db, paths).unwrap();
+    let models = dir.path().join("models");
+    std::fs::create_dir_all(&models).unwrap();
+    let state = AppState::new(library.clone()).with_ai(photos_ml::Ai::start(library.clone(), vec![models.clone()]));
+    let h = Harness { dir_path: dir.path().to_path_buf(), _dir: dir, app: router(state.clone()), token: state.token().to_owned(), library };
+
+    let (status, list) = h.call("GET", "/api/ai/features", true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let names: Vec<&str> = list.as_array().unwrap().iter().map(|f| f["feature"].as_str().unwrap()).collect();
+    assert_eq!(names, ["faces", "search", "blur"]);
+    assert!(list.as_array().unwrap().iter().all(|f| f["installed"] == false && f["job"].is_null() && f["size"].as_u64().unwrap() > 0));
+
+    // Model files that are there (here: placed by hand) count as installed and can be removed.
+    for f in photos_ml::models::FACES {
+        std::fs::write(models.join(f.path), b"x").unwrap();
+    }
+    let (_, list) = h.call("GET", "/api/ai/features", true, None).await;
+    assert_eq!((list[0]["installed"].clone(), list[0]["removable"].clone()), (json!(true), json!(true)));
+    let (status, list) = h.call("DELETE", "/api/ai/features/faces", true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(list[0]["installed"], false);
+    assert!(!models.join(photos_ml::models::FACES[0].path).exists());
+
+    assert_eq!(h.call("POST", "/api/ai/features/nonsense/download", true, None).await.0, StatusCode::BAD_REQUEST);
+}

@@ -76,9 +76,10 @@ async fn info(State(s): State<AppState>, Path(id): Path<i64>) -> Result<Json<med
 /// URLs carry the file's mtime (`?v=`), so the browser may cache them for good.
 async fn thumb(State(s): State<AppState>, Path(id): Path<i64>, req: Request) -> Result<Response, ApiError> {
     let _slot = s.thumb_slots.acquire().await.map_err(|e| ApiError::Internal(e.to_string()))?;
-    let lib = s.library.clone();
+    let (lib, st) = (s.library.clone(), s.clone());
     let path = blocking(move || {
         let m = media::get(lib.db(), id)?;
+        crate::edit::prepare_mask(&st, &m);
         thumbs::ensure_thumb(lib.paths(), &m)
     })
     .await?;
@@ -90,6 +91,7 @@ async fn display(State(s): State<AppState>, Path(id): Path<i64>, req: Request) -
     let lib = s.library.clone();
     let (path, mime) = blocking(move || {
         let m = media::get(lib.db(), id)?;
+        crate::edit::prepare_mask(&s, &m);
         let path = thumbs::ensure_display(lib.paths(), &m)?;
         let mime = if path == m.path { m.mime } else { "image/jpeg".into() };
         Ok((path, mime))

@@ -1,8 +1,20 @@
 <script lang="ts">
   import { untrack } from 'svelte'
-  import { api, errorMessage, showInExplorer, type AiStatus, type Settings } from '../lib/api'
+  import { ask } from '@tauri-apps/plugin-dialog'
+  import { api, errorMessage, type AiStatus, type Feature, type Settings } from '../lib/api'
   import Icon from '../lib/Icon.svelte'
   import { library } from '../lib/library.svelte'
+  import {
+    FEATURE_INFO,
+    FEATURES,
+    cancelFeature,
+    downloadFeature,
+    features,
+    mb,
+    pauseFeature,
+    removeFeature,
+    watchFeatures,
+  } from '../lib/features.svelte'
 
   let { settings, onchange }: { settings: Settings; onchange: (s: Settings) => void } = $props()
 
@@ -28,6 +40,7 @@
     const timer = setInterval(load, 3000)
     return () => clearInterval(timer)
   })
+  $effect(() => watchFeatures())
 
   async function save(patch: Partial<Settings>) {
     busy = true
@@ -42,6 +55,7 @@
     }
   }
 
+  /** Model files copied in by hand. */
   async function checkAgain() {
     try {
       ai = await api.ai.refresh()
@@ -51,17 +65,29 @@
     }
   }
 
+  async function remove(f: Feature) {
+    const ok = await ask(
+      `Remove ${FEATURE_INFO[f].title}? It turns off until you download it again. What it already found, like people's names, is kept.`,
+      { title: 'Remove AI feature', kind: 'warning', okLabel: 'Remove', cancelLabel: 'Cancel' },
+    )
+    if (ok) removeFeature(f)
+  }
+
+  const list = $derived(features.list ?? [])
+  const missing = $derived(list.filter((f) => !f.installed && !f.job))
+  const used = $derived(list.filter((f) => f.installed && f.removable).reduce((n, f) => n + f.size, 0))
   const where = $derived(ai?.device === 'gpu' ? 'on the graphics card' : 'on the processor')
   const pending = $derived(library.status?.aiPending ?? ai?.pending ?? 0)
+  const pct = (got: number, total: number) => Math.floor((got / Math.max(1, total)) * 100)
 </script>
 
 <div class="card">
   <div class="card-head">
     <div>
-      <h2>People and smart search</h2>
+      <h2>AI features</h2>
       <p class="muted">
-        Finds faces and groups them into people, and lets you search by what is in a photo (“beach”, “dog”, “birthday
-        cake”). It runs on this PC; nothing is uploaded.
+        Groups photos by the people in them, finds photos by what is in them and helps in the editor. Each feature needs its
+        own one-time download. Photos are looked at on this PC only; nothing is uploaded.
       </p>
     </div>
     <label class="switch" title={settings.mlEnabled ? 'Turn off' : 'Turn on'}>
@@ -77,17 +103,82 @@
 
   {#if error}<p class="error">{error}</p>{/if}
 
+  {#if settings.mlEnabled && list.length > 0}
+    <ul class="features">
+      {#each FEATURES as f (f)}
+        {@const st = list.find((x) => x.feature === f)}
+        {#if st}
+          {@const job = st.job}
+          {@const p = job ? pct(job.got, job.total) : 0}
+          <li class="feature">
+            <span class="f-ico tint-{FEATURE_INFO[f].tint}"><Icon name={FEATURE_INFO[f].icon} size={22} /></span>
+            <span class="f-body">
+              <span class="f-title">
+                {FEATURE_INFO[f].title}
+                {#if st.installed}
+                  <span class="f-badge ok">On</span>
+                {:else if job?.state === 'downloading'}
+                  <span class="f-badge dl">Downloading {p}%</span>
+                {:else if job?.state === 'queued'}
+                  <span class="f-badge dl">Waiting</span>
+                {:else if job?.state === 'paused'}
+                  <span class="f-badge">Paused</span>
+                {:else if job?.state === 'failed'}
+                  <span class="f-badge err">Stopped</span>
+                {:else}
+                  <span class="f-badge">Not downloaded</span>
+                {/if}
+              </span>
+              {#if job?.state === 'failed'}
+                <span class="error small">{job.error}</span>
+              {:else}
+                <span class="muted small">
+                  {FEATURE_INFO[f].short}
+                  {#if f === 'blur' && !st.installed && !st.full}Lighter version for this PC.{/if}
+                </span>
+              {/if}
+              {#if job && job.state !== 'failed'}
+                <span class="f-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow={p} aria-label={FEATURE_INFO[f].title}>
+                  <i style:width="{p}%"></i>
+                </span>
+              {/if}
+            </span>
+            <span class="f-side">
+              <span class="muted small">{job ? `${mb(job.got)} / ${mb(job.total)}` : mb(st.size)}</span>
+              {#if st.installed}
+                {#if st.removable}<button class="btn danger" onclick={() => remove(f)}>Remove</button>{/if}
+              {:else if !job}
+                <button class="btn primary" onclick={() => downloadFeature(f)}><Icon name="download" size={18} /> Download</button>
+              {:else}
+                {#if job.state === 'paused' || job.state === 'failed'}
+                  <button class="btn" onclick={() => downloadFeature(f)}>{job.state === 'failed' ? 'Try again' : 'Resume'}</button>
+                {:else}
+                  <button class="btn" onclick={() => pauseFeature(f)}>Pause</button>
+                {/if}
+                <button class="btn" onclick={() => cancelFeature(f)}>Cancel</button>
+              {/if}
+            </span>
+          </li>
+        {/if}
+      {/each}
+    </ul>
+    <div class="f-foot">
+      <span class="muted small">{used > 0 ? `Downloaded models use ${mb(used)}.` : ''}</span>
+      <span class="f-foot-actions">
+        <button class="link small" onclick={checkAgain} title="Copied model files into the models folder by hand?">Check again</button>
+        {#if missing.length > 1}
+          <button class="btn primary" onclick={() => missing.forEach((f) => downloadFeature(f.feature))}>
+            Download all ({mb(missing.reduce((n, f) => n + f.size, 0))})
+          </button>
+        {/if}
+      </span>
+    </div>
+  {/if}
+
   {#if settings.mlEnabled && ai}
     <div class="ai-status">
       {#if ai.state === 'noModels'}
-        <p><Icon name="warning" size={18} /> The recognition model files are not installed.</p>
-        <p class="muted small">Copy them into one of these folders, then choose Check again:</p>
-        <ul class="small">
-          {#each ai.searched as dir (dir)}
-            <li><button class="link" onclick={() => showInExplorer(dir).catch(() => {})}>{dir}</button></li>
-          {/each}
-        </ul>
-        <button class="btn" onclick={checkAgain}><Icon name="refresh" size={20} /> Check again</button>
+        <p class="muted">Download People and faces or Search above to start looking at your photos.</p>
       {:else if ai.state === 'error'}
         <p class="error">Could not start: {ai.error}</p>
       {:else if ai.state === 'waiting'}
@@ -119,6 +210,124 @@
 </div>
 
 <style>
+  .features {
+    list-style: none;
+    margin: 12px 0 0;
+    padding: 0;
+  }
+
+  .feature {
+    display: grid;
+    grid-template-columns: 40px minmax(0, 1fr) auto;
+    gap: 16px;
+    align-items: center;
+    padding: 14px 0;
+    border-top: 1px solid var(--border);
+  }
+
+  .feature:first-child {
+    border-top: 0;
+  }
+
+  .f-ico {
+    width: 40px;
+    height: 40px;
+    border-radius: 12px;
+    display: grid;
+    place-items: center;
+  }
+
+  .tint-blue {
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+
+  .tint-amber {
+    background: var(--warn-bg);
+    color: var(--warn);
+  }
+
+  .tint-green {
+    background: var(--ok-soft);
+    color: var(--ok);
+  }
+
+  .f-body {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .f-title {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    font-weight: 600;
+  }
+
+  .f-badge {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: var(--bg-hover);
+    color: var(--fg-muted);
+  }
+
+  .f-badge.ok {
+    background: var(--ok-soft);
+    color: var(--ok);
+  }
+
+  .f-badge.dl {
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+
+  .f-badge.err {
+    color: var(--danger);
+  }
+
+  .f-track {
+    display: block;
+    height: 4px;
+    max-width: 360px;
+    margin-top: 8px;
+    border-radius: 999px;
+    background: var(--bg-hover);
+    overflow: hidden;
+  }
+
+  .f-track i {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+    transition: width 0.4s linear;
+  }
+
+  .f-side {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    white-space: nowrap;
+  }
+
+  .f-foot {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+    padding: 12px 0 4px;
+    border-top: 1px solid var(--border);
+  }
+
+  .f-foot-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
   .ai-status {
     margin: 8px 0 12px;
     padding: 12px 16px;
@@ -131,10 +340,5 @@
     align-items: center;
     gap: 8px;
     margin: 4px 0;
-  }
-
-  .ai-status ul {
-    margin: 4px 0 12px;
-    padding-left: 20px;
   }
 </style>

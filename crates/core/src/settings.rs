@@ -54,6 +54,8 @@ pub struct Settings {
     pub vault_lock_on_minimize: bool,
     /// Memories ("on this day", trips...) above the timeline and on their own page.
     pub memories: bool,
+    /// The first-start welcome (AI features, first folder) was finished or skipped.
+    pub welcome_done: bool,
 }
 
 impl Default for Settings {
@@ -75,6 +77,7 @@ impl Default for Settings {
             vault_lock_minutes: 5,
             vault_lock_on_minimize: false,
             memories: true,
+            welcome_done: false,
         }
     }
 }

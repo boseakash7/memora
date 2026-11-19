@@ -3,6 +3,8 @@
   import { api, type TimelineQuery } from '../lib/api'
   import Icon from '../lib/Icon.svelte'
   import { goSearch, router } from '../lib/router.svelte'
+  import FeatureDownload from '../components/FeatureDownload.svelte'
+  import { feature, features, watchFeatures } from '../lib/features.svelte'
 
   let cameras = $state<string[]>([])
 
@@ -34,6 +36,10 @@
   }
 
   const filtered = $derived(!!(kind || camera || from || to))
+
+  $effect(() => watchFeatures())
+  /** Searching by what is in a photo needs the CLIP model; names, places and dates work without. */
+  const noContent = $derived(!!features.list && feature('search')?.installed === false)
 </script>
 
 <div class="media-page">
@@ -72,6 +78,17 @@
     {/if}
   </div>
 
+  {#if noContent && q.trim()}
+    <div class="search-note" role="note">
+      <Icon name="info" size={18} />
+      <span class="note-text">
+        Searching names, places, dates and cameras only.
+        <span class="muted">To find things like “dog” or “beach”, download Search by what’s in a photo.</span>
+      </span>
+      <FeatureDownload of="search" inline />
+    </div>
+  {/if}
+
   <div class="grid-host">
     {#if hasQuery}
       <MediaPage {query}>
@@ -100,3 +117,26 @@
     {/if}
   </div>
 </div>
+
+<style>
+  .search-note {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 12px 16px 4px;
+    padding: 6px 8px 6px 14px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    font-size: 13px;
+  }
+
+  .search-note > :global(svg) {
+    flex: none;
+    color: var(--fg-muted);
+  }
+
+  .note-text {
+    flex: 1;
+    min-width: 0;
+  }
+</style>

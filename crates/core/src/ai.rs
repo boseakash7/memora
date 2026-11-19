@@ -30,6 +30,13 @@ pub struct Found {
     pub clip: Option<Vec<f32>>,
 }
 
+/// Parts of recognition, as bits of `media.ai_done`: which models looked at an item.
+/// Each runs only when its model files are installed, so an item can have one without the
+/// other; it is looked at again when the missing model arrives (see [`requeue`]).
+pub const FACES: i64 = 1;
+pub const CLIP: i64 = 2;
+pub const ALL_PARTS: i64 = FACES | CLIP;
+
 /// What [`save`] changed.
 #[derive(Debug, Default)]
 pub struct Saved {
@@ -50,6 +57,15 @@ pub fn next_batch(db: &Db, limit: usize) -> Result<Vec<Media>> {
     Ok(items.collect::<std::result::Result<_, _>>()?)
 }
 
+/// Whether recognition found any face in the item.
+pub fn has_faces(db: &Db, media_id: i64) -> Result<bool> {
+    let conn = db.conn()?;
+    let n: i64 = conn
+        .prepare_cached("SELECT count(*) FROM faces WHERE media_id = ?1")?
+        .query_row([media_id], |r| r.get(0))?;
+    Ok(n > 0)
+}
+
 pub(crate) fn iou(a: [f32; 4], b: [f32; 4]) -> f32 {
     let w = (a[0] + a[2]).min(b[0] + b[2]) - a[0].max(b[0]);
     let h = (a[1] + a[3]).min(b[1] + b[3]) - a[1].max(b[1]);
@@ -66,15 +82,46 @@ pub(crate) fn iou(a: [f32; 4], b: [f32; 4]) -> f32 {
 /// An item looked at again (its file changed) keeps the people of faces found in the same
 /// place, so names and the user's corrections survive.
 pub fn save(db: &Db, m: &Media, found: &Found) -> Result<Option<Saved>> {
+    save_parts(db, m, found, ALL_PARTS)
+}
+
+/// [`save`] for the parts that ran (bits of [`FACES`], [`CLIP`]). What a part that didn't
+/// run found before is kept as it was.
+pub fn save_parts(db: &Db, m: &Media, found: &Found, ran: i64) -> Result<Option<Saved>> {
     let mut conn = db.conn()?;
     let tx = conn.transaction()?;
     let n = tx
-        .prepare_cached("UPDATE media SET stage = ?3 WHERE id = ?1 AND stage = ?2 AND mtime = ?4")?
-        .execute(params![m.id, Stage::HASH, Stage::AI, m.mtime])?;
+        .prepare_cached("UPDATE media SET stage = ?3, ai_done = ?5 WHERE id = ?1 AND stage = ?2 AND mtime = ?4")?
+        .execute(params![m.id, Stage::HASH, Stage::AI, m.mtime, ran])?;
     if n == 0 {
         return Ok(None);
     }
+    let mut saved = Saved::default();
+    if ran & FACES != 0 {
+        saved = save_faces(&tx, m, found)?;
+    }
+    if ran & CLIP != 0 {
+        match &found.clip {
+            Some(v) if v.len() == CLIP_DIM => semantic::save(&tx, m.id, v)?,
+            _ => {
+                tx.prepare_cached("DELETE FROM clip_embeddings WHERE media_id = ?1")?.execute([m.id])?;
+            }
+        }
+    }
+    tx.commit()?;
+    Ok(Some(saved))
+}
 
+/// Look again at items done without a part that can run now (`parts`: the installed models'
+/// bits). Returns how many were queued.
+pub fn requeue(db: &Db, parts: i64) -> Result<usize> {
+    let conn = db.conn()?;
+    Ok(conn
+        .prepare_cached("UPDATE media SET stage = ?1 WHERE stage = ?2 AND (ai_done & ?3) != ?3")?
+        .execute(params![Stage::HASH, Stage::AI, parts])?)
+}
+
+fn save_faces(tx: &r2d2_sqlite::rusqlite::Transaction, m: &Media, found: &Found) -> Result<Saved> {
     let old: Vec<(i64, [f32; 4], Option<i64>, i64)> = {
         let mut stmt = tx.prepare_cached("SELECT id, x, y, w, h, person_id, locked FROM faces WHERE media_id = ?1")?;
         stmt.query_map([m.id], |r| Ok((r.get(0)?, [r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?], r.get(5)?, r.get(6)?)))?
@@ -101,17 +148,10 @@ pub fn save(db: &Db, m: &Media, found: &Found) -> Result<Option<Saved>> {
         saved.face_ids.push(tx.last_insert_rowid());
     }
     // Names and corrections made on other PCs for this item (see `sync`).
-    crate::sync::apply_faces_for(&tx, m.id)?;
+    crate::sync::apply_faces_for(tx, m.id)?;
     // ...and those of a restored backup.
-    crate::backup::apply_waiting_faces(&tx, m.id)?;
-    match &found.clip {
-        Some(v) if v.len() == CLIP_DIM => semantic::save(&tx, m.id, v)?,
-        _ => {
-            tx.prepare_cached("DELETE FROM clip_embeddings WHERE media_id = ?1")?.execute([m.id])?;
-        }
-    }
-    tx.commit()?;
-    Ok(Some(saved))
+    crate::backup::apply_waiting_faces(tx, m.id)?;
+    Ok(saved)
 }
 
 #[cfg(test)]
@@ -147,5 +187,27 @@ mod tests {
         assert_eq!(faces[0].person.as_ref().map(|p| p.id), Some(p.id));
         let clips: i64 = db.conn().unwrap().query_row("SELECT count(*) FROM clip_embeddings", [], |r| r.get(0)).unwrap();
         assert_eq!(clips, 0);
+    }
+
+    #[test]
+    fn a_model_installed_later_gets_its_turn() {
+        let (_dir, db) = test_db();
+        let ids = people::tests::insert_media(&db, 1);
+        db.conn().unwrap().execute("UPDATE media SET stage = 3", []).unwrap();
+        let m = crate::media::get(&db, ids[0]).unwrap();
+        let face = FoundFace { rect: [0.1, 0.2, 0.1, 0.1], score: 0.9, embedding: face_like(0, 1) };
+
+        // Only the face models are installed.
+        save_parts(&db, &m, &Found { faces: vec![face], clip: None }, FACES).unwrap().unwrap();
+        assert_eq!(requeue(&db, FACES).unwrap(), 0);
+        // Then CLIP arrives: the item is looked at again, and a run of CLIP alone keeps its faces.
+        assert_eq!(requeue(&db, ALL_PARTS).unwrap(), 1);
+        let m = crate::media::get(&db, ids[0]).unwrap();
+        save_parts(&db, &m, &Found { faces: vec![], clip: Some(vec![0.0; CLIP_DIM]) }, CLIP).unwrap().unwrap();
+        assert_eq!(people::faces_of(&db, m.id).unwrap().len(), 1);
+        let clips: i64 = db.conn().unwrap().query_row("SELECT count(*) FROM clip_embeddings", [], |r| r.get(0)).unwrap();
+        assert_eq!(clips, 1);
+        // Done with CLIP only now, so faces would be queued once their models are back.
+        assert_eq!(requeue(&db, ALL_PARTS).unwrap(), 1);
     }
 }

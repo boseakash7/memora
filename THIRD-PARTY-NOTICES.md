@@ -20,6 +20,7 @@ programs, models and data below, each under its own license.
 
 - YuNet face detector and SFace face recognizer, from the OpenCV Model Zoo: Apache License 2.0.
 - CLIP ViT-B/32 (OpenAI), ONNX export by Xenova (transformers.js): MIT License.
+- BiRefNet-lite (Zheng Peng et al.), used for background blur in the photo editor: MIT License. ONNX exports by onnx-community (1024x1024) and Studio Ludens V.O.F. (512x512, MIT License, Copyright (c) 2024 ZhengPeng, Copyright (c) 2026 Studio Ludens V.O.F.).
 
 ## Built into memora.exe
 

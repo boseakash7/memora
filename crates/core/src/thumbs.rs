@@ -1,9 +1,14 @@
 //! Thumbnails for the grid and browser-friendly copies of HEIC, RAW and TIFF photos.
 //!
 //! Cache layout: `cache/<kind>/<id / 1000>/<id>.jpg`, where kind is `thumb` (grid), `display`
-//! (HEIC/TIFF for the viewer), `tv` (photos for TVs), `tn` (tiny DLNA thumbnails) or `story`
-//! (video storyboards for the viewer's seek-bar preview).
+//! (HEIC/TIFF for the viewer), `edited` (an edited photo for the viewer), `tv` (photos for
+//! TVs), `tn` (tiny DLNA thumbnails) or `story` (video storyboards for the viewer's seek-bar
+//! preview); `mask/<id / 1000>/<id>.png` holds the main subject found for background blur.
 //! Files are keyed by media id, so renames and moves keep their thumbnails.
+//!
+//! Every picture of an edited photo (see `edit`) is rendered with its edit. Pictures are
+//! fresh when written after the item's last change ([`Media::version`]: file or edit); the
+//! unedited base copies of HEIC/RAW only depend on the file.
 
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Seek, SeekFrom, Write};
@@ -36,7 +41,7 @@ pub const STORYBOARD_MAX_FRAMES: u32 = 100;
 pub const STORYBOARD_COLUMNS: u32 = 10;
 /// ...each fitting in this square (sharp on a 150% display at the preview's 176 px).
 pub const STORYBOARD_TILE: u32 = 240;
-const CACHE_KINDS: &[&str] = &["thumb", "display", "tv", "tn", "story"];
+const CACHE_KINDS: &[&str] = &["thumb", "display", "edited", "tv", "tn", "story"];
 
 fn cache_file(paths: &AppPaths, kind: &str, id: i64) -> PathBuf {
     paths.cache_dir.join(kind).join((id / 1000).to_string()).join(format!("{id}.jpg"))
@@ -50,20 +55,96 @@ pub fn display_path(paths: &AppPaths, id: i64) -> PathBuf {
     cache_file(paths, "display", id)
 }
 
+/// The viewer's copy of an edited photo.
+pub fn edited_path(paths: &AppPaths, id: i64) -> PathBuf {
+    cache_file(paths, "edited", id)
+}
+
+/// The main subject of a photo (white) for background blur, as found by recognition.
+pub fn mask_path(paths: &AppPaths, id: i64) -> PathBuf {
+    paths.cache_dir.join("mask").join((id / 1000).to_string()).join(format!("{id}.png"))
+}
+
+/// The subject mask, if one was made since the file last changed.
+pub fn load_mask(paths: &AppPaths, media: &Media) -> Option<GrayImage> {
+    let path = mask_path(paths, media.id);
+    if !is_fresh_base(&path, media) {
+        return None;
+    }
+    image::open(&path).ok().map(|i| i.to_luma8())
+}
+
+pub fn has_mask(paths: &AppPaths, media: &Media) -> bool {
+    is_fresh_base(&mask_path(paths, media.id), media)
+}
+
+pub fn write_mask(paths: &AppPaths, id: i64, mask: &GrayImage) -> Result<()> {
+    let path = mask_path(paths, id);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
+    DynamicImage::ImageLuma8(mask.clone()).save_with_format(&tmp, image::ImageFormat::Png)?;
+    std::fs::rename(&tmp, &path)?;
+    Ok(())
+}
+
 /// Delete cached files for items that left the library.
 pub fn remove_cached(paths: &AppPaths, ids: &[i64]) {
     for &id in ids {
         for kind in CACHE_KINDS {
             let _ = std::fs::remove_file(cache_file(paths, kind, id));
         }
+        let _ = std::fs::remove_file(mask_path(paths, id));
     }
 }
 
-/// A cached file is fresh if it was written after the source file last changed.
+fn written_at(cached: &Path) -> Option<i64> {
+    let modified = cached.metadata().and_then(|m| m.modified()).ok()?;
+    Some(modified.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0))
+}
+
+/// A cached picture is fresh if it was written after the file or its edit last changed.
 fn is_fresh(cached: &Path, media: &Media) -> bool {
-    let Ok(modified) = cached.metadata().and_then(|m| m.modified()) else { return false };
-    let written = modified.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
-    written >= media.mtime
+    written_at(cached).is_some_and(|t| t >= media.version())
+}
+
+/// For pictures that don't show the edit (HEIC/RAW base copies, masks): only the file counts.
+fn is_fresh_base(cached: &Path, media: &Media) -> bool {
+    written_at(cached).is_some_and(|t| t >= media.mtime)
+}
+
+/// The photo as displayed (EXIF rotation applied, unedited), decoded at least big enough to
+/// fill `box_w` x `box_h` (more is fine).
+fn decode_source(paths: &AppPaths, media: &Media, box_w: u32, box_h: u32) -> Result<RgbImage> {
+    let fit = |w, h| fit_within(w, h, box_w, box_h);
+    let img = match media.format() {
+        Format::Jpeg => decode_jpeg_scaled(&media.path, media.orientation, fit)?,
+        Format::Raster => decode_raster(&media.path, media.orientation)?,
+        Format::FfmpegStill | Format::Raw => decode_jpeg_scaled(&still_copy(paths, media)?, 1, fit)?,
+        Format::Video => return Err(Error::media("videos can't be edited")),
+    };
+    Ok(flatten(&img))
+}
+
+/// The photo with its edit, fitting in `max_w` x `max_h`.
+pub fn render_edited(paths: &AppPaths, media: &Media, edit: &crate::edit::Edit, max_w: u32, max_h: u32) -> Result<RgbImage> {
+    let (bw, bh) = edit.source_box(max_w, max_h);
+    let src = decode_source(paths, media, bw, bh)?;
+    let mask = if edit.blur > 0.0 { load_mask(paths, media) } else { None };
+    Ok(crate::edit::render::render(&src, mask.as_ref(), edit, max_w, max_h))
+}
+
+/// The photo as displayed, for the editor: at most `max` on its longest side (unedited).
+pub fn editor_source(paths: &AppPaths, media: &Media, max: u32) -> Result<RgbImage> {
+    let src = decode_source(paths, media, max, max)?;
+    let (w, h) = fit_within(src.width(), src.height(), max, max);
+    Ok(if (w, h) == (src.width(), src.height()) { src } else { image::imageops::thumbnail(&src, w, h) })
+}
+
+/// The edited photo at full resolution (HEIC and RAW: at the display copy's size), for export.
+pub fn render_full(paths: &AppPaths, media: &Media, edit: &crate::edit::Edit) -> Result<RgbImage> {
+    render_edited(paths, media, edit, u32::MAX / 16, u32::MAX / 16)
 }
 
 /// Path to an up-to-date thumbnail, generating it if needed.
@@ -75,13 +156,22 @@ pub fn ensure_thumb(paths: &AppPaths, media: &Media) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// The file the viewer should show: the original, or a converted JPEG for HEIC/TIFF.
+/// The file the viewer should show: the original, a converted JPEG for HEIC/TIFF, or the
+/// edited photo.
 pub fn ensure_display(paths: &AppPaths, media: &Media) -> Result<PathBuf> {
+    if let Some(edit) = media.edit().filter(|_| media.format() != Format::Video) {
+        let path = edited_path(paths, media.id);
+        if !is_fresh(&path, media) {
+            let img = render_edited(paths, media, edit, DISPLAY_MAX, DISPLAY_MAX)?;
+            write_jpeg_q(&DynamicImage::ImageRgb8(img), &path, EDITED_QUALITY)?;
+        }
+        return Ok(path);
+    }
     if !needs_display_copy(&media.mime) {
         return Ok(media.path.clone());
     }
     let path = display_path(paths, media.id);
-    if !is_fresh(&path, media) {
+    if !is_fresh_base(&path, media) {
         let img = match media.format() {
             Format::FfmpegStill | Format::Raw => {
                 return prepare_still(paths, media).map(|_| path);
@@ -98,6 +188,9 @@ pub fn ensure_display(paths: &AppPaths, media: &Media) -> Result<PathBuf> {
 /// served as they are; HEIC/AVIF/RAW use their display copy (already upright, at most 2560 px).
 pub fn ensure_tv(paths: &AppPaths, media: &Media) -> Result<PathBuf> {
     let (w, h) = (media.width.unwrap_or(0), media.height.unwrap_or(0));
+    if media.edit().is_some() && media.format() != Format::Video {
+        return ensure_display(paths, media);
+    }
     match media.format() {
         Format::Video => return Err(Error::media("videos have no TV photo")),
         Format::FfmpegStill | Format::Raw => return ensure_display(paths, media),
@@ -121,8 +214,9 @@ pub fn ensure_tv(paths: &AppPaths, media: &Media) -> Result<PathBuf> {
 
 /// Pixel size of [`ensure_tv`]'s picture, from the stored (displayed) size.
 pub fn tv_size(media: &Media) -> Option<(u32, u32)> {
-    let (w, h) = (media.width?, media.height?);
+    let (w, h) = media.shown_size()?;
     let (mw, mh) = match media.format() {
+        Format::Jpeg | Format::Raster if media.edit().is_some() => (DISPLAY_MAX, DISPLAY_MAX),
         Format::FfmpegStill | Format::Raw => (DISPLAY_MAX, DISPLAY_MAX),
         _ => (TV_MAX_W, TV_MAX_H),
     };
@@ -131,7 +225,8 @@ pub fn tv_size(media: &Media) -> Option<(u32, u32)> {
 
 /// Pixel size of [`ensure_small`]'s picture, from the stored (displayed) size.
 pub fn small_size(media: &Media) -> Option<(u32, u32)> {
-    Some(fit_within(media.width?, media.height?, SMALL_MAX, SMALL_MAX))
+    let (w, h) = media.shown_size()?;
+    Some(fit_within(w, h, SMALL_MAX, SMALL_MAX))
 }
 
 /// A thumbnail that fits in 160x160 (DLNA `JPEG_TN`), made from the grid thumbnail.
@@ -217,7 +312,7 @@ pub fn prepare_still(paths: &AppPaths, media: &Media) -> Result<()> {
 /// The up-to-date display copy of a HEIC/AVIF/RAW photo, made if needed.
 fn still_copy(paths: &AppPaths, media: &Media) -> Result<PathBuf> {
     let display = display_path(paths, media.id);
-    if !is_fresh(&display, media) {
+    if !is_fresh_base(&display, media) {
         prepare_still(paths, media)?;
     }
     Ok(display)
@@ -283,6 +378,13 @@ pub fn video_frame_png(media: &Media, secs: f64) -> Result<Vec<u8>> {
 
 /// Generate the grid thumbnail.
 pub fn make_thumb(paths: &AppPaths, media: &Media) -> Result<()> {
+    if let Some(edit) = media.edit().filter(|_| media.format() != Format::Video) {
+        let (w, h) = (media.width.unwrap_or(THUMB_HEIGHT), media.height.unwrap_or(THUMB_HEIGHT));
+        let (ow, oh) = edit.output_size(w, h);
+        let (tw, th) = thumb_size(ow, oh);
+        let img = render_edited(paths, media, edit, tw, th)?;
+        return write_jpeg(&DynamicImage::ImageRgb8(img), &thumb_path(paths, media.id));
+    }
     let img = match media.format() {
         Format::Jpeg => decode_jpeg_scaled(&media.path, media.orientation, thumb_size)?,
         Format::Raster => decode_raster(&media.path, media.orientation)?,
@@ -371,8 +473,26 @@ fn decode_jpeg_scaled_at(
     }
 }
 
-/// Write a JPEG atomically (temp file + rename) so readers never see half a file.
+/// JPEG quality of edited photos' viewer copies (their only full-size picture).
+const EDITED_QUALITY: u8 = 90;
+
 fn write_jpeg(img: &DynamicImage, dest: &Path) -> Result<()> {
+    write_jpeg_q(img, dest, JPEG_QUALITY)
+}
+
+/// Encode as JPEG.
+pub fn encode_jpeg(img: &RgbImage, quality: u8) -> Result<Vec<u8>> {
+    let (w, h) = (u16::try_from(img.width()), u16::try_from(img.height()));
+    let (Ok(w), Ok(h)) = (w, h) else { return Err(Error::media("picture too large for JPEG")) };
+    let mut out = Vec::new();
+    jpeg_encoder::Encoder::new(&mut out, quality)
+        .encode(img.as_raw(), w, h, jpeg_encoder::ColorType::Rgb)
+        .map_err(|e| Error::media(format!("cannot write JPEG: {e}")))?;
+    Ok(out)
+}
+
+/// Write a JPEG atomically (temp file + rename) so readers never see half a file.
+pub(crate) fn write_jpeg_q(img: &DynamicImage, dest: &Path, quality: u8) -> Result<()> {
     let rgb = flatten(img);
     if let Some(dir) = dest.parent() {
         std::fs::create_dir_all(dir)?;
@@ -386,7 +506,7 @@ fn write_jpeg(img: &DynamicImage, dest: &Path) -> Result<()> {
         // encoder (~20 ms instead of ~110 ms for a 2560 px display copy).
         let (w, h) = (u16::try_from(rgb.width()), u16::try_from(rgb.height()));
         let (Ok(w), Ok(h)) = (w, h) else { return Err(Error::media("picture too large for JPEG")) };
-        jpeg_encoder::Encoder::new(&mut out, JPEG_QUALITY)
+        jpeg_encoder::Encoder::new(&mut out, quality)
             .encode(rgb.as_raw(), w, h, jpeg_encoder::ColorType::Rgb)
             .map_err(|e| Error::media(format!("cannot write JPEG: {e}")))?;
         out.flush()?;

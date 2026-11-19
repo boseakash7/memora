@@ -155,6 +155,14 @@ pub struct Media {
     pub trashed: bool,
     /// In the Archive: shown only on the Archive page (and the TV/DLNA Archive).
     pub archived: bool,
+    /// The saved edit (crop, adjustments, filter), applied to every picture made of the item.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edit: Option<crate::edit::Edit>,
+    /// Last edited or reverted (unix ms); newer than `mtime` means cached pictures are stale.
+    pub edited_at: Option<i64>,
+    /// Size after the edit's crop and rotation (None: same as `width`/`height`).
+    pub edit_width: Option<u32>,
+    pub edit_height: Option<u32>,
 }
 
 /// The condition for items that the everyday lists show: on disk, not in the trash and
@@ -166,7 +174,7 @@ pub(crate) const VISIBLE_M: &str = "m.missing = 0 AND m.trashed_at IS NULL AND m
 
 pub(crate) const MEDIA_COLUMNS: &str = "id, folder_id, path, name, size, mtime, kind, mime, width, height, \
      duration_ms, orientation, taken_at, tz_offset, camera_make, camera_model, lat, lon, favorite, \
-     missing, stage, error, video_codec, audio_codec, trashed_at IS NOT NULL, archived_at IS NOT NULL";
+     missing, stage, error, video_codec, audio_codec, trashed_at IS NOT NULL, archived_at IS NOT NULL,      edit, edited_at, edit_width, edit_height";
 
 impl Media {
     pub(crate) fn from_row(r: &Row) -> r2d2_sqlite::rusqlite::Result<Self> {
@@ -197,11 +205,33 @@ impl Media {
             audio_codec: r.get(23)?,
             trashed: r.get(24)?,
             archived: r.get(25)?,
+            edit: r.get::<_, Option<String>>(26)?.and_then(|s| crate::edit::parse(&s)),
+            edited_at: r.get(27)?,
+            edit_width: r.get(28)?,
+            edit_height: r.get(29)?,
         })
     }
 
     pub fn format(&self) -> Format {
         format_of_mime(&self.mime)
+    }
+
+    /// When the item's pictures last changed (unix ms): the file, or its edit.
+    pub fn version(&self) -> i64 {
+        self.mtime.max(self.edited_at.unwrap_or(0))
+    }
+
+    /// The saved edit, if it changes anything.
+    pub fn edit(&self) -> Option<&crate::edit::Edit> {
+        self.edit.as_ref().filter(|e| !e.is_identity())
+    }
+
+    /// Size as shown: after the edit's crop and rotation.
+    pub fn shown_size(&self) -> Option<(u32, u32)> {
+        match (self.edit_width, self.edit_height) {
+            (Some(w), Some(h)) if self.edit().is_some() => Some((w, h)),
+            _ => Some((self.width?, self.height?)),
+        }
     }
 
     /// A record for a file that is not in a library, for tests.
@@ -235,6 +265,10 @@ impl Media {
             audio_codec: None,
             trashed: false,
             archived: false,
+            edit: None,
+            edited_at: None,
+            edit_width: None,
+            edit_height: None,
         }
     }
 }
@@ -295,7 +329,7 @@ pub struct TimelineItem {
     /// Video duration in milliseconds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub d: Option<i64>,
-    /// File modification time in seconds; changes the thumbnail URL when the file changes.
+    /// File modification or edit time in seconds; changes the thumbnail URL when either changes.
     pub m: i64,
     /// True for favorites.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -465,7 +499,8 @@ fn filter(db: &Db, q: &Query) -> Result<(String, Vec<Value>)> {
 pub fn query(db: &Db, q: &Query) -> Result<Vec<TimelineItem>> {
     let (filter, args) = filter(db, q)?;
     let sql = format!(
-        "SELECT id, width, height, taken_at, kind, duration_ms, mtime, favorite FROM media
+        "SELECT id, coalesce(edit_width, width), coalesce(edit_height, height), taken_at, kind, duration_ms,
+             max(mtime, coalesce(edited_at, 0)), favorite FROM media
          WHERE {filter} ORDER BY taken_at DESC, id DESC"
     );
     let conn = db.conn()?;

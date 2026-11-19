@@ -38,6 +38,8 @@ export type ActionContext = {
   onfavorite?: (favorite: boolean) => void
   /** The items left this list (trashed, restored, deleted, (un)archived, removed from the album, unfavorited). */
   onremoved?: () => void
+  /** Open the photo editor (the viewer and the grid offer it for one photo). */
+  edit?: () => void
   /** Grid only: open in the viewer, open with the info panel, select. */
   open?: () => void
   info?: () => void
@@ -305,6 +307,7 @@ export function itemMenu(c: ActionContext): { header?: string; entries: MenuEntr
   const favorite = isFavorite(c)
   const entries: MenuEntry[] = []
   if (one && c.open) entries.push({ label: video ? 'Play' : 'Open', icon: video ? 'play' : 'openInFull', run: c.open })
+  if (one && !video && c.edit) entries.push({ label: 'Edit', icon: 'tune', run: c.edit })
   entries.push(
     {
       label: favorite ? 'Remove from favorites' : 'Add to favorites',

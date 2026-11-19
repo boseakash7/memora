@@ -37,6 +37,8 @@ pub fn routes(state: AppState) -> Router<AppState> {
         .merge(people::routes())
         .merge(crate::vault::routes())
         .merge(crate::memories::routes())
+        .merge(crate::edit::routes())
+        .merge(crate::models::routes())
         .route_layer(middleware::from_fn_with_state(state, auth::require_token))
         // Health check stays public so the UI can tell "server down" from "bad token".
         .route("/health", get(|| async { Json(json!({ "ok": true, "version": env!("CARGO_PKG_VERSION") })) }))

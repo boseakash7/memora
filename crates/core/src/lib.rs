@@ -8,6 +8,7 @@ pub mod backup;
 pub mod browse;
 pub mod db;
 pub mod duplicates;
+pub mod edit;
 pub mod error;
 pub mod ffmpeg;
 pub mod folders;

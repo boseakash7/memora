@@ -442,3 +442,34 @@ fn real_library_upgrade() {
     println!("apply over the whole library: changed {changed} in {:.1?}", started.elapsed());
     assert!(!changed, "switching on must not change the library");
 }
+
+#[test]
+fn photo_edits_travel() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = pc(dir.path(), "G", "");
+    enable(&a.db, a.folder).unwrap();
+    let edit = crate::edit::Edit {
+        rotate: 1,
+        filter: Some("chrome".into()),
+        adjust: crate::edit::Adjust { exposure: 20.0, ..Default::default() },
+        ..Default::default()
+    };
+    crate::edit::save(&a.db, a.id("a.png"), Some(edit.clone())).unwrap();
+    a.sync();
+
+    let b = pc(dir.path(), "H", "");
+    carry(&a, &b);
+    enable(&b.db, b.folder).unwrap();
+    assert!(b.sync());
+    let got = crate::edit::get(&b.db, b.id("a.png")).unwrap();
+    assert_eq!(got.edit, Some(edit));
+    assert!(got.edited_at.is_some());
+    assert!(!b.sync(), "nothing new the second time");
+
+    // Reverting on the second PC reaches the first.
+    crate::edit::save(&b.db, b.id("a.png"), None).unwrap();
+    b.sync();
+    carry(&b, &a);
+    assert!(a.sync());
+    assert_eq!(crate::edit::get(&a.db, a.id("a.png")).unwrap().edit, None);
+}

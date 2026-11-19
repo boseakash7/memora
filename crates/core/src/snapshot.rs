@@ -133,7 +133,7 @@ pub fn write(db: &Db, folder: &Folder, root: &Path) -> Result<usize> {
         let mut stmt = conn.prepare(
             "SELECT m.id, m.path, m.size, m.mtime, m.blake3, m.kind, m.mime, m.width, m.height, m.duration_ms,
                     m.orientation, m.taken_at, m.tz_offset, m.camera_make, m.camera_model, m.lat, m.lon, m.phash,
-                    p.country, p.admin1, p.city, m.video_codec, m.audio_codec, m.stage >= ?2, c.vec
+                    p.country, p.admin1, p.city, m.video_codec, m.audio_codec, m.stage >= ?2 AND m.ai_done = 3, c.vec
              FROM media m LEFT JOIN places p ON p.id = m.place_id LEFT JOIN clip_embeddings c ON c.media_id = m.id
              WHERE m.folder_id = ?1 AND m.missing = 0 AND m.stage >= ?3 AND m.error IS NULL AND m.blake3 IS NOT NULL",
         )?;

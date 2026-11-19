@@ -60,7 +60,7 @@ export type TimelineItem = {
   v?: boolean
   /** Video duration in ms. */
   d?: number
-  /** File mtime in seconds, used to bust cached thumbnails. */
+  /** File (or edit) time in seconds, used to bust cached thumbnails. */
   m: number
   /** Present (true) for favorites. */
   f?: boolean
@@ -118,6 +118,28 @@ export type AiStatus = {
   searched: string[]
   /** Items still to look at. */
   pending: number
+  /** Which features' models are installed. */
+  installed: { faces: boolean; search: boolean; blur: boolean }
+}
+
+/** Something the user can download models for. */
+export type Feature = 'faces' | 'search' | 'blur'
+
+export type FeatureStatus = {
+  feature: Feature
+  installed: boolean
+  /** Downloaded by Memora (not part of the installed app), so it can be removed. */
+  removable: boolean
+  /** Bytes on disk when installed, else bytes to download. */
+  size: number
+  /** Blur only: the full-size model for a graphics card, not the lighter one. */
+  full: boolean
+  job: {
+    state: 'queued' | 'downloading' | 'paused' | 'failed'
+    got: number
+    total: number
+    error: string | null
+  } | null
 }
 
 export type Album = {
@@ -200,6 +222,13 @@ export type Media = {
   archived: boolean
   stage: number
   error: string | null
+  /** The saved edit; missing for the original. */
+  edit?: import('./edit').Edit
+  /** When last edited or reverted (unix ms). */
+  editedAt: number | null
+  /** Size after the edit's crop and turns. */
+  editWidth: number | null
+  editHeight: number | null
 }
 
 /** Read from the file when the info panel opens; every field is null when the file doesn't say. */
@@ -266,6 +295,8 @@ export type Settings = {
   vaultLockOnMinimize: boolean
   /** Memories above the timeline and on their own page. */
   memories: boolean
+  /** The first-start welcome was finished or skipped. */
+  welcomeDone: boolean
 }
 
 /** The locked folder: set up or not, locked or not. */
@@ -465,6 +496,13 @@ export const api = {
     status: () => request<AiStatus | null>('GET', '/ai'),
     /** Look for the model files again. */
     refresh: () => request<AiStatus | null>('POST', '/ai/refresh'),
+    features: () => request<FeatureStatus[]>('GET', '/ai/features'),
+    download: (f: Feature) => request<FeatureStatus[]>('POST', `/ai/features/${f}/download`),
+    /** Stop, keeping what came down so it can go on later. */
+    pause: (f: Feature) => request<FeatureStatus[]>('POST', `/ai/features/${f}/pause`),
+    /** Stop and throw away what came down. */
+    cancel: (f: Feature) => request<FeatureStatus[]>('POST', `/ai/features/${f}/cancel`),
+    remove: (f: Feature) => request<FeatureStatus[]>('DELETE', `/ai/features/${f}`),
   },
   lan: () => request<LanStatus>('GET', '/lan'),
   mapPoints: () => request<MapPoint[]>('GET', '/map/points'),
@@ -495,6 +533,32 @@ export const api = {
     remove: (id: number, ids: number[]) => request<Memory>('POST', `/memories/${id}/remove`, { ids }),
     /** Work them out again now (normally done in the background). */
     rebuild: () => request<void>('POST', '/memories/rebuild'),
+  },
+  edit: {
+    /** `subjectsGpu`: background blur's subject finder runs on a graphics card (null: not known yet). */
+    filters: () =>
+      request<{ filters: import('./edit').FilterInfo[]; subjects: boolean; subjectsGpu: boolean | null }>(
+        'GET',
+        '/edit/filters',
+      ),
+    get: (id: number) => request<{ edit: import('./edit').Edit | null; editedAt: number | null }>('GET', `/media/${id}/edit`),
+    /** Save (null: back to the original). Returns the new size and picture version. */
+    save: (id: number, edit: import('./edit').Edit | null) =>
+      request<{ edit: import('./edit').Edit | null; editedAt: number | null; w: number; h: number; m: number }>(
+        'PUT',
+        `/media/${id}/edit`,
+        { edit },
+      ),
+    enhance: (id: number, edit: import('./edit').Edit) =>
+      request<{ adjust: import('./edit').Adjust; scene: import('./edit').Scene | null; suggested: string[] }>(
+        'POST',
+        `/media/${id}/edit/enhance`,
+        { edit },
+      ),
+    /** Find the main subject, for background blur (a few seconds the first time). */
+    subject: (id: number) => request<{ ok: boolean }>('POST', `/media/${id}/edit/subject`),
+    export: (id: number, path: string, edit?: import('./edit').Edit) =>
+      request<{ path: string; width: number; height: number }>('POST', `/media/${id}/edit/export`, { path, edit }),
   },
   albums: {
     list: () => request<Album[]>('GET', '/albums'),

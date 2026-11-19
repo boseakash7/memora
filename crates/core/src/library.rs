@@ -865,7 +865,8 @@ impl Inner {
                 // Items whose hashes (and maybe faces) came from an index snapshot are done.
                 Outcome::Thumbnail(Ok(())) => tx
                     .prepare_cached(
-                        "UPDATE media SET stage = CASE imported WHEN 2 THEN ?5 WHEN 1 THEN ?6 ELSE ?3 END
+                        "UPDATE media SET stage = CASE imported WHEN 2 THEN ?5 WHEN 1 THEN ?6 ELSE ?3 END,
+                             ai_done = CASE imported WHEN 2 THEN 3 ELSE 0 END
                          WHERE id = ?1 AND stage = ?2 AND mtime = ?4",
                     )?
                     .execute(params![m.id, m.stage, Stage::THUMBNAIL, m.mtime, Stage::AI, Stage::HASH])?,

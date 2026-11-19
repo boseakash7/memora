@@ -2,6 +2,7 @@
   import { untrack } from 'svelte'
   import { api, type AiStatus } from '../lib/api'
   import Icon from '../lib/Icon.svelte'
+  import FeatureDownload from './FeatureDownload.svelte'
   import { library } from '../lib/library.svelte'
 
   /**
@@ -39,12 +40,12 @@
         <a class="btn" href="#/settings">Open Settings</a>
       </div>
     {/if}
-  {:else if ai.state === 'noModels'}
+  {:else if !ai.installed.faces}
     <div class={compact ? 'notice' : 'empty'}>
       {#if !compact}<div class="empty-icon"><Icon name="people" size={56} /></div>{/if}
-      <h2>Face recognition isn't installed</h2>
-      <p>The model files are missing. See Settings for where they go.</p>
-      {#if !compact}<a class="btn" href="#/settings">Open Settings</a>{/if}
+      <h2>Find the people in your photos</h2>
+      <p>Download “People and faces” to group your photos by who is in them. It runs on this PC only.</p>
+      <FeatureDownload of="faces" compact={compact} />
     </div>
   {:else if ai.state === 'error'}
     <p class="error">Face recognition could not start: {ai.error}</p>

@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 use std::sync::RwLock;
 
-use r2d2_sqlite::rusqlite::Transaction;
+use r2d2_sqlite::rusqlite::{OptionalExtension, Transaction};
 use rayon::prelude::*;
 
 use crate::db::Db;
@@ -76,6 +76,16 @@ impl Index {
         if let Some(state) = self.state.write().unwrap().as_mut() {
             state.put(id, v);
         }
+    }
+
+    /// An item's vector, from the database.
+    pub fn vector(&self, db: &Db, id: i64) -> Result<Option<Vec<f32>>> {
+        let conn = db.conn()?;
+        let blob: Option<Vec<u8>> = conn
+            .prepare_cached("SELECT vec FROM clip_embeddings WHERE media_id = ?1")?
+            .query_row([id], |r| r.get(0))
+            .optional()?;
+        Ok(blob.map(|b| from_blob(&b)).filter(|v| v.len() == CLIP_DIM))
     }
 
     /// Forget the vectors held in memory; the next search loads them again (after many
