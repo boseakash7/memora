@@ -2706,7 +2706,7 @@ dependencies = [
 
 [[package]]
 name = "memora"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
  "photos-core",
  "photos-ml",
@@ -3448,7 +3448,7 @@ dependencies = [
 
 [[package]]
 name = "photos-core"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
  "argon2",
  "blake3",
@@ -3482,7 +3482,7 @@ dependencies = [
 
 [[package]]
 name = "photos-ml"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
  "fast_image_resize",
  "image",
@@ -3500,7 +3500,7 @@ dependencies = [
 
 [[package]]
 name = "photos-server"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
  "axum",
  "blake3",

@@ -9,7 +9,7 @@ rust-version.workspace = true
 fast_image_resize = { version = "6.1.0", features = ["image"] }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "download-binaries", "copy-dylibs", "tls-native", "tracing", "api-22", "directml"] }
-photos-core = { version = "0.2.0", path = "../core" }
+photos-core = { version = "0.4.0", path = "../core" }
 rayon = "1.12.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
