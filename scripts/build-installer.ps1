@@ -182,10 +182,24 @@ $configFile = Join-Path $stage 'tauri.installer.json'
 [System.IO.File]::WriteAllText($configFile, ($config | ConvertTo-Json -Depth 6))
 
 # ---------- build ----------
+# Tauri names both installers <name>_<version>_x64-setup.exe, so an online build would
+# overwrite a full installer of the same version: keep it aside while bundling.
+$nsis = Join-Path $target 'release\bundle\nsis'
+$kept = $null
+if ($NoModels) {
+    $full = Join-Path $nsis ("Memora_{0}_x64-setup.exe" -f $metadata.packages[0].version)
+    if (Test-Path $full) {
+        $kept = "$full.full"
+        Move-Item $full $kept -Force
+    }
+}
 Push-Location $root
 try {
     cargo tauri build --config $configFile
-    if ($LASTEXITCODE -ne 0) { throw 'cargo tauri build failed' }
+    if ($LASTEXITCODE -ne 0) {
+        if ($kept) { Move-Item $kept ($kept -replace '\.full$', '') -Force }
+        throw 'cargo tauri build failed'
+    }
 } finally {
     Pop-Location
 }
@@ -199,6 +213,7 @@ if ($NoModels) {
     Move-Item $installer.FullName $online -Force
     $installer = Get-Item $online
 }
+if ($kept) { Move-Item $kept ($kept -replace '\.full$', '') -Force }
 $signature = Get-AuthenticodeSignature $installer.FullName
 Write-Host ''
 Write-Host ("Installer: {0} ({1:N0} MB)" -f $installer.FullName, ($installer.Length / 1MB))
